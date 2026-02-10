@@ -19,6 +19,11 @@ public interface IDiskWriter
     Task<DiskWriteHandle> OpenDiskForWriteAsync(string diskPath, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Open a partition for writing.
+    /// </summary>
+    Task<DiskWriteHandle> OpenPartitionForWriteAsync(uint diskNumber, uint partitionNumber, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Write sectors to an open disk handle.
     /// </summary>
     Task WriteSectorsAsync(DiskWriteHandle handle, byte[] buffer, long sectorOffset, int sectorCount, CancellationToken cancellationToken = default);
@@ -65,6 +70,25 @@ public class DiskWriter : IDiskWriter
             }
 
             return new DiskWriteHandle(handle, diskPath);
+        }, cancellationToken);
+    }
+
+    public async Task<DiskWriteHandle> OpenPartitionForWriteAsync(uint diskNumber, uint partitionNumber, CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            string partPath = $"\\\\.\\Harddisk{diskNumber}Partition{partitionNumber}";
+            Log.Debug("OpenPartitionForWrite: {Path}", partPath);
+            var handle = DiskApi.OpenDiskForWrite(partPath);
+            int win32 = Marshal.GetLastWin32Error();
+
+            if (handle.IsInvalid)
+            {
+                Log.Error("OpenPartitionForWrite FAILED: path={Path}, Win32={Win32} (0x{Win32X})", partPath, win32, win32.ToString("X"));
+                throw new IOException($"Failed to open partition for write: {partPath}. Error: {win32}");
+            }
+
+            return new DiskWriteHandle(handle, partPath);
         }, cancellationToken);
     }
 

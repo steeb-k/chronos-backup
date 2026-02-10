@@ -17,6 +17,8 @@ public class DiskInfo
     public string SerialNumber { get; set; } = string.Empty;
     public ulong Size { get; set; }
     public DiskPartitionStyle PartitionStyle { get; set; } = DiskPartitionStyle.Unknown;
+    public bool IsSystemDisk { get; set; }
+    public bool IsBootDisk { get; set; }
 
     public override string ToString() =>
         $"{Manufacturer} {Model} ({((long)Size).ToHumanReadableSize()})";

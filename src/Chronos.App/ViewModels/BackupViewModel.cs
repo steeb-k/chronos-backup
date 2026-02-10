@@ -24,11 +24,21 @@ public partial class BackupViewModel : ObservableObject
     [ObservableProperty] public partial bool VerifyAfterBackup { get; set; } = true;
     [ObservableProperty] public partial bool HasPartitions { get; set; }
 
+    // For clone operations
+    [ObservableProperty] public partial List<DiskInfo> AvailableDestinationDisks { get; set; } = new();
+    [ObservableProperty] public partial List<PartitionInfo> AvailableDestinationPartitions { get; set; } = new();
+    [ObservableProperty] public partial DiskInfo? SelectedDestinationDisk { get; set; }
+    [ObservableProperty] public partial PartitionInfo? SelectedDestinationPartition { get; set; }
+    [ObservableProperty] public partial bool HasDestinationPartitions { get; set; }
+
     public bool IsBackupInProgress => _operationsService?.IsBackupInProgress ?? false;
     public double ProgressPercentage => _operationsService?.ProgressPercentage ?? 0;
     public string StatusMessage => _operationsService?.StatusMessage ?? string.Empty;
-    public bool CanStartBackup => SelectedDisk is not null && !string.IsNullOrWhiteSpace(DestinationPath) && !IsBackupInProgress;
+    public bool CanStartBackup => SelectedDisk is not null && 
+        (IsCloneOperation ? SelectedDestinationDisk is not null : !string.IsNullOrWhiteSpace(DestinationPath)) && 
+        !IsBackupInProgress;
     public string ProgressText => $"{ProgressPercentage:F1}%";
+    public bool IsCloneOperation => SelectedBackupType == BackupType.DiskClone || SelectedBackupType == BackupType.PartitionClone;
 
     public BackupViewModel(IBackupOperationsService? operationsService = null, IDiskEnumerator? diskEnumerator = null)
     {
@@ -52,12 +62,27 @@ public partial class BackupViewModel : ObservableObject
     private async Task LoadDisksAsync()
     {
         if (_diskEnumerator is not null)
+        {
             AvailableDisks = await _diskEnumerator.GetDisksAsync();
+            AvailableDestinationDisks = await _diskEnumerator.GetDisksAsync();
+        }
     }
 
     partial void OnSelectedDiskChanged(DiskInfo? value)
     {
         _ = LoadPartitionsForDiskAsync(value);
+        OnPropertyChanged(nameof(CanStartBackup));
+    }
+
+    partial void OnSelectedDestinationDiskChanged(DiskInfo? value)
+    {
+        _ = LoadDestinationPartitionsAsync(value);
+        OnPropertyChanged(nameof(CanStartBackup));
+    }
+
+    partial void OnSelectedBackupTypeChanged(BackupType value)
+    {
+        OnPropertyChanged(nameof(IsCloneOperation));
         OnPropertyChanged(nameof(CanStartBackup));
     }
 
@@ -82,6 +107,22 @@ public partial class BackupViewModel : ObservableObject
         HasPartitions = partitions.Count > 0;
     }
 
+    private async Task LoadDestinationPartitionsAsync(DiskInfo? disk)
+    {
+        if (_diskEnumerator is null || disk is null)
+        {
+            AvailableDestinationPartitions = new List<PartitionInfo>();
+            SelectedDestinationPartition = null;
+            HasDestinationPartitions = false;
+            return;
+        }
+
+        var partitions = await _diskEnumerator.GetPartitionsAsync(disk.DiskNumber);
+        AvailableDestinationPartitions = partitions;
+        SelectedDestinationPartition = null;
+        HasDestinationPartitions = partitions.Count > 0;
+    }
+
     [RelayCommand]
     private async Task StartBackupAsync()
     {
@@ -91,15 +132,37 @@ public partial class BackupViewModel : ObservableObject
         if (SelectedDisk is null && SelectedPartition is null)
             return;
 
-        if (string.IsNullOrWhiteSpace(DestinationPath))
-            return;
+        // Build destination path based on operation type
+        string destinationPath;
+        if (IsCloneOperation)
+        {
+            // For clone operations, destination is a physical disk/partition
+            if (SelectedDestinationDisk is null)
+                return;
+
+            if (SelectedBackupType == BackupType.PartitionClone && SelectedDestinationPartition is not null)
+            {
+                destinationPath = $"{SelectedDestinationDisk.DiskNumber}:{SelectedDestinationPartition.PartitionNumber}";
+            }
+            else
+            {
+                destinationPath = $"{SelectedDestinationDisk.DiskNumber}";
+            }
+        }
+        else
+        {
+            // For backup operations, destination is a file path
+            if (string.IsNullOrWhiteSpace(DestinationPath))
+                return;
+            destinationPath = DestinationPath;
+        }
 
         var job = new BackupJob
         {
-            SourcePath = SelectedBackupType == BackupType.FullDisk
+            SourcePath = SelectedBackupType == BackupType.FullDisk || SelectedBackupType == BackupType.DiskClone
                 ? $"\\\\.\\PhysicalDrive{SelectedDisk?.DiskNumber}"
                 : $"{SelectedDisk?.DiskNumber}:{SelectedPartition?.PartitionNumber}",
-            DestinationPath = DestinationPath,
+            DestinationPath = destinationPath,
             Type = SelectedBackupType,
             CompressionLevel = CompressionLevel,
             UseVSS = UseVSS

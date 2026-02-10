@@ -81,4 +81,13 @@ public interface IVirtualDiskService
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>An attached VHDX handle. Dispose to detach.</returns>
     Task<IAttachedVhdx> CreateAndAttachVhdxForWriteAsync(string path, long maxSizeBytes, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Attaches an existing VHDX for read-only access and returns the physical disk path for sector reads.
+    /// Call Dispose on the returned object to detach when done.
+    /// </summary>
+    /// <param name="path">The path to the VHDX file.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>An attached VHDX handle. Dispose to detach.</returns>
+    Task<IAttachedVhdx> AttachVhdxReadOnlyAsync(string path, CancellationToken cancellationToken = default);
 }

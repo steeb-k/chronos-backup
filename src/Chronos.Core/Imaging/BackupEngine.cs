@@ -59,58 +59,27 @@ public class BackupEngine : IBackupEngine
 
         try
         {
-            progressReporter?.Report(new OperationProgress { StatusMessage = "Opening source disk..." });
+            // Check if this is a clone operation (destination is a physical disk/partition)
+            bool isClone = job.Type == BackupType.DiskClone || job.Type == BackupType.PartitionClone;
 
-            (uint diskNumber, uint? partitionNumber) = ParseSourcePath(job.SourcePath);
-            Log.Debug("Parsed source: Disk={Disk}, Partition={Partition}", diskNumber, partitionNumber);
-            DiskReadHandle? sourceHandle = null;
-
-            try
+            if (isClone)
             {
-                sourceHandle = partitionNumber.HasValue
-                    ? await _diskReader.OpenPartitionAsync(diskNumber, partitionNumber.Value, ct).ConfigureAwait(false)
-                    : await _diskReader.OpenDiskAsync(diskNumber, ct).ConfigureAwait(false);
-
-                ulong sourceSize = await _diskReader.GetSizeAsync(sourceHandle, ct).ConfigureAwait(false);
-                Log.Information("Source opened: Size={Size} bytes", sourceSize);
-                if (sourceSize == 0)
-                    throw new InvalidOperationException("Source has zero size");
-
-                string ext = Path.GetExtension(job.DestinationPath).ToLowerInvariant();
-                bool isVhdx = ext is ".vhdx" or ".vhd";
-                Log.Debug("Destination format: ext={Ext}, isVhdx={IsVhdx}", ext, isVhdx);
-
-                if (isVhdx)
-                {
-                    await CopyToVhdxAsync(sourceHandle, sourceSize, job, progressReporter, ct, diskNumber, partitionNumber).ConfigureAwait(false);
-                }
-                else
-                {
-                    await CopyToFileAsync(sourceHandle, sourceSize, job, progressReporter, ct).ConfigureAwait(false);
-                }
-
-                progressReporter?.Report(new OperationProgress
-                {
-                    StatusMessage = "Backup completed successfully",
-                    PercentComplete = 100,
-                    BytesProcessed = (long)sourceSize,
-                    TotalBytes = (long)sourceSize
-                });
+                await ExecuteCloneAsync(job, progressReporter, ct).ConfigureAwait(false);
             }
-            finally
+            else
             {
-                sourceHandle?.Dispose();
+                await ExecuteBackupAsync(job, progressReporter, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
         {
-            progressReporter?.Report(new OperationProgress { StatusMessage = "Backup cancelled" });
+            progressReporter?.Report(new OperationProgress { StatusMessage = "Operation cancelled" });
             throw;
         }
         catch (Exception ex)
         {
             int win32 = Marshal.GetLastWin32Error();
-            Log.Error(ex, "Backup failed. Win32 error: {Win32} (0x{Win32X}). Message: {Message}", win32, win32.ToString("X"), ex.Message);
+            Log.Error(ex, "Operation failed. Win32 error: {Win32} (0x{Win32X}). Message: {Message}", win32, win32.ToString("X"), ex.Message);
             progressReporter?.Report(new OperationProgress { StatusMessage = $"Error: {ex.Message}" });
             throw;
         }
@@ -118,6 +87,115 @@ public class BackupEngine : IBackupEngine
         {
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
+        }
+    }
+
+    private async Task ExecuteBackupAsync(BackupJob job, IProgressReporter? progressReporter, CancellationToken ct)
+    {
+        progressReporter?.Report(new OperationProgress { StatusMessage = "Opening source disk..." });
+
+        (uint diskNumber, uint? partitionNumber) = ParseSourcePath(job.SourcePath);
+        Log.Debug("Parsed source: Disk={Disk}, Partition={Partition}", diskNumber, partitionNumber);
+        DiskReadHandle? sourceHandle = null;
+
+        try
+        {
+            sourceHandle = partitionNumber.HasValue
+                ? await _diskReader.OpenPartitionAsync(diskNumber, partitionNumber.Value, ct).ConfigureAwait(false)
+                : await _diskReader.OpenDiskAsync(diskNumber, ct).ConfigureAwait(false);
+
+            ulong sourceSize = await _diskReader.GetSizeAsync(sourceHandle, ct).ConfigureAwait(false);
+            Log.Information("Source opened: Size={Size} bytes", sourceSize);
+            if (sourceSize == 0)
+                throw new InvalidOperationException("Source has zero size");
+
+            string ext = Path.GetExtension(job.DestinationPath).ToLowerInvariant();
+            bool isVhdx = ext is ".vhdx" or ".vhd";
+            Log.Debug("Destination format: ext={Ext}, isVhdx={IsVhdx}", ext, isVhdx);
+
+            if (isVhdx)
+            {
+                await CopyToVhdxAsync(sourceHandle, sourceSize, job, progressReporter, ct, diskNumber, partitionNumber).ConfigureAwait(false);
+            }
+            else
+            {
+                await CopyToFileAsync(sourceHandle, sourceSize, job, progressReporter, ct).ConfigureAwait(false);
+            }
+
+            progressReporter?.Report(new OperationProgress
+            {
+                StatusMessage = "Backup completed successfully",
+                PercentComplete = 100,
+                BytesProcessed = (long)sourceSize,
+                TotalBytes = (long)sourceSize
+            });
+        }
+        finally
+        {
+            sourceHandle?.Dispose();
+        }
+    }
+
+    private async Task ExecuteCloneAsync(BackupJob job, IProgressReporter? progressReporter, CancellationToken ct)
+    {
+        progressReporter?.Report(new OperationProgress { StatusMessage = "Opening source disk..." });
+
+        (uint sourceDisk, uint? sourcePartition) = ParseSourcePath(job.SourcePath);
+        (uint destDisk, uint? destPartition) = ParseSourcePath(job.DestinationPath); // Reuse same parser
+        Log.Information("Clone operation: Source Disk={SDisk}:{SPart}, Dest Disk={DDisk}:{DPart}", 
+            sourceDisk, sourcePartition, destDisk, destPartition);
+
+        // Validate source and destination are different
+        if (sourceDisk == destDisk && sourcePartition == destPartition)
+        {
+            throw new InvalidOperationException("Source and destination cannot be the same disk/partition");
+        }
+
+        DiskReadHandle? sourceHandle = null;
+        DiskWriteHandle? destHandle = null;
+
+        try
+        {
+            // Open source
+            sourceHandle = sourcePartition.HasValue
+                ? await _diskReader.OpenPartitionAsync(sourceDisk, sourcePartition.Value, ct).ConfigureAwait(false)
+                : await _diskReader.OpenDiskAsync(sourceDisk, ct).ConfigureAwait(false);
+
+            ulong sourceSize = await _diskReader.GetSizeAsync(sourceHandle, ct).ConfigureAwait(false);
+            Log.Information("Source opened: Size={Size} bytes", sourceSize);
+            if (sourceSize == 0)
+                throw new InvalidOperationException("Source has zero size");
+
+            // Open destination for write
+            progressReporter?.Report(new OperationProgress { StatusMessage = "Opening destination disk for write..." });
+            
+            if (destPartition.HasValue)
+            {
+                destHandle = await _diskWriter.OpenPartitionForWriteAsync(destDisk, destPartition.Value, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                string destPath = $"\\\\.\\PhysicalDrive{destDisk}";
+                destHandle = await _diskWriter.OpenDiskForWriteAsync(destPath, ct).ConfigureAwait(false);
+            }
+
+            Log.Information("Destination opened for write");
+
+            // Copy sectors directly (no VSS for clone, no allocated ranges optimization)
+            await CopySectorsAsync(sourceHandle, destHandle, sourceSize, 0, null, null, progressReporter, ct).ConfigureAwait(false);
+
+            progressReporter?.Report(new OperationProgress
+            {
+                StatusMessage = "Clone completed successfully",
+                PercentComplete = 100,
+                BytesProcessed = (long)sourceSize,
+                TotalBytes = (long)sourceSize
+            });
+        }
+        finally
+        {
+            sourceHandle?.Dispose();
+            destHandle?.Dispose();
         }
     }
 

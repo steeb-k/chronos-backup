@@ -70,7 +70,26 @@ public partial class App : Application
     {
         _window = new MainWindow();
         MainWindow = _window;
+        
+        // Hook up window closing event to dismount VHDXs
+        _window.Closed += OnMainWindowClosed;
+        
         _window.Activate();
+    }
+
+    private void OnMainWindowClosed(object sender, Microsoft.UI.Xaml.WindowEventArgs args)
+    {
+        Log.Information("Application closing - dismounting all VHDXs");
+        
+        // Get the VirtualDiskService and dismount all VHDXs
+        var virtualDiskService = Services.GetService<IVirtualDiskService>();
+        if (virtualDiskService is VirtualDiskService vds)
+        {
+            vds.DismountAll();
+        }
+
+        Log.Information("Application closed");
+        Log.CloseAndFlush();
     }
 
     private static IServiceProvider ConfigureServices()
@@ -86,8 +105,11 @@ public partial class App : Application
         services.AddSingleton<IVirtualDiskService, VirtualDiskService>();
         services.AddSingleton<ICompressionProvider, ZstdCompressionProvider>();
         services.AddSingleton<IBackupEngine, BackupEngine>();
+        services.AddSingleton<IRestoreEngine, RestoreEngine>();
         services.AddSingleton<IVerificationEngine, VerificationEngine>();
         services.AddSingleton<IBackupOperationsService, BackupOperationsService>();
+        services.AddSingleton<ISettingsService, SettingsService>();
+        services.AddSingleton<IOperationHistoryService, OperationHistoryService>();
 
         // ViewModels
         services.AddTransient<MainViewModel>();
@@ -96,6 +118,7 @@ public partial class App : Application
         services.AddTransient<VerifyViewModel>();
         services.AddTransient<BrowseViewModel>();
         services.AddTransient<OptionsViewModel>();
+        services.AddTransient<HistoryViewModel>();
 
         // Navigation
         services.AddSingleton<INavigationService, NavigationService>();

@@ -13,6 +13,7 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
 {
     private readonly IBackupEngine _backupEngine;
     private readonly IVerificationEngine? _verificationEngine;
+    private readonly IOperationHistoryService? _historyService;
 
     [ObservableProperty]
     private bool _isBackupInProgress;
@@ -23,10 +24,14 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
     [ObservableProperty]
     private string _statusMessage = string.Empty;
 
-    public BackupOperationsService(IBackupEngine backupEngine, IVerificationEngine? verificationEngine = null)
+    public BackupOperationsService(
+        IBackupEngine backupEngine, 
+        IVerificationEngine? verificationEngine = null,
+        IOperationHistoryService? historyService = null)
     {
         _backupEngine = backupEngine;
         _verificationEngine = verificationEngine;
+        _historyService = historyService;
     }
 
     public async Task StartBackupAsync(BackupJob job, bool verifyAfterBackup)
@@ -36,6 +41,11 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
             StatusMessage = "A backup is already in progress";
             return;
         }
+
+        var startTime = DateTime.UtcNow;
+        long bytesProcessed = 0;
+        string status = "Success";
+        string? errorMessage = null;
 
         try
         {
@@ -52,32 +62,34 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
                 lastUiUpdate = now;
 
                 ProgressPercentage = p.PercentComplete;
-                var status = $"Processing - {p.PercentComplete:F1}%";
+                bytesProcessed = p.BytesProcessed;
+                
+                var statusText = $"Processing - {p.PercentComplete:F1}%";
 
                 if (p.TotalBytes > 0)
                 {
-                    status += $" ({FormatBytes((ulong)p.BytesProcessed)} / {FormatBytes((ulong)p.TotalBytes)})";
+                    statusText += $" ({FormatBytes((ulong)p.BytesProcessed)} / {FormatBytes((ulong)p.TotalBytes)})";
                 }
 
                 if (p.BytesPerSecond > 0)
                 {
-                    status += $" - {FormatBytes((ulong)p.BytesPerSecond)}/s";
+                    statusText += $" - {FormatBytes((ulong)p.BytesPerSecond)}/s";
 
                     if (p.TotalBytes > p.BytesProcessed)
                     {
                         long remainingBytes = p.TotalBytes - p.BytesProcessed;
                         double remainingSeconds = (double)remainingBytes / p.BytesPerSecond;
-                        status += $" - ETA: {FormatTimeSpan(TimeSpan.FromSeconds(remainingSeconds))}";
+                        statusText += $" - ETA: {FormatTimeSpan(TimeSpan.FromSeconds(remainingSeconds))}";
                     }
                 }
 
                 if (!string.IsNullOrEmpty(p.StatusMessage))
                 {
-                    StatusMessage = $"{p.StatusMessage} - {status}";
+                    StatusMessage = $"{p.StatusMessage} - {statusText}";
                 }
                 else
                 {
-                    StatusMessage = status;
+                    StatusMessage = statusText;
                 }
             });
 
@@ -89,10 +101,10 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
                 var verifyProgress = new Progress<OperationProgress>(p =>
                 {
                     ProgressPercentage = p.PercentComplete;
-                    var status = $"Verifying - {p.PercentComplete:F1}%";
+                    var statusText = $"Verifying - {p.PercentComplete:F1}%";
                     if (p.TotalBytes > 0)
-                        status += $" ({FormatBytes((ulong)p.BytesProcessed)} / {FormatBytes((ulong)p.TotalBytes)})";
-                    StatusMessage = status;
+                        statusText += $" ({FormatBytes((ulong)p.BytesProcessed)} / {FormatBytes((ulong)p.TotalBytes)})";
+                    StatusMessage = statusText;
                 });
                 var verifyReporter = new ProgressReporter(verifyProgress);
 
@@ -101,7 +113,11 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
                 if (verified)
                     StatusMessage = "Backup completed and verified successfully!";
                 else
+                {
                     StatusMessage = "Backup completed, but verification failed. The image may be corrupted.";
+                    status = "Failed";
+                    errorMessage = "Verification failed";
+                }
             }
             else
             {
@@ -111,14 +127,38 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
         catch (OperationCanceledException)
         {
             StatusMessage = "Backup cancelled";
+            status = "Cancelled";
         }
         catch (Exception ex)
         {
             StatusMessage = $"Backup failed: {ex.Message}";
+            status = "Failed";
+            errorMessage = ex.Message;
         }
         finally
         {
             IsBackupInProgress = false;
+
+            // Log to history
+            if (_historyService is not null)
+            {
+                var duration = DateTime.UtcNow - startTime;
+                var operationType = job.Type == BackupType.DiskClone || job.Type == BackupType.PartitionClone 
+                    ? "Clone" 
+                    : "Backup";
+
+                _historyService.LogOperation(new OperationHistoryEntry
+                {
+                    Timestamp = startTime,
+                    OperationType = operationType,
+                    SourcePath = job.SourcePath,
+                    DestinationPath = job.DestinationPath,
+                    Status = status,
+                    ErrorMessage = errorMessage,
+                    BytesProcessed = bytesProcessed,
+                    Duration = duration
+                });
+            }
         }
     }
 

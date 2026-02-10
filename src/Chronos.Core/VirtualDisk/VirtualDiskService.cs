@@ -57,6 +57,9 @@ internal sealed class AttachedVhdx : IAttachedVhdx
 /// </summary>
 public class VirtualDiskService : IVirtualDiskService
 {
+    private readonly Dictionary<string, SafeFileHandle> _mountedDisks = new();
+    private readonly object _lock = new();
+
     public async Task CreateDynamicVhdxAsync(string path, long maxSizeBytes, CancellationToken cancellationToken = default)
     {
         await Task.Run(() =>
@@ -150,15 +153,108 @@ public class VirtualDiskService : IVirtualDiskService
 
     public async Task<char> MountToDriveLetterAsync(string path, bool readOnly = true)
     {
-        // This is a simplified implementation
-        // In a real scenario, you'd need to use Windows APIs to find an available drive letter
-        // and use SetupDiXxx functions to mount the disk
         return await Task.Run(() =>
         {
-            // For now, just return Z: as a placeholder
-            // This would need proper implementation
-            return 'Z';
+            Log.Debug("MountToDriveLetter: path={Path}, readOnly={ReadOnly}", path, readOnly);
+            
+            var storageType = new VirtualDiskInterop.VirtualStorageTypeStruct
+            {
+                DeviceId = VirtualDiskInterop.VirtualStorageType.VHDX,
+                VendorId = new Guid("EC984AEC-A0F9-47E9-901F-71415A66345B")
+            };
+
+            var openParams = new VirtualDiskInterop.OpenVirtualDiskParametersV2
+            {
+                Version = VirtualDiskInterop.OpenVirtualDiskVersion.Version2,
+                ReadOnly = readOnly,
+                GetInfoOnly = false,
+                ResiliencyGuid = Guid.Empty
+            };
+
+            var accessMask = readOnly 
+                ? VirtualDiskInterop.VirtualDiskAccessMask.AttachReadOnly
+                : VirtualDiskInterop.VirtualDiskAccessMask.AttachReadWrite;
+
+            uint result = VirtualDiskInterop.OpenVirtualDisk(
+                ref storageType,
+                path,
+                accessMask,
+                VirtualDiskInterop.OpenVirtualDiskFlags.None,
+                ref openParams,
+                out SafeFileHandle handle);
+
+            int win32 = Marshal.GetLastWin32Error();
+            if (result != 0)
+            {
+                Log.Error("OpenVirtualDisk (Mount) FAILED: result={Result}, Win32={Win32} (0x{Win32X}), path={Path}", result, win32, win32.ToString("X"), path);
+                throw new InvalidOperationException($"Failed to open virtual disk for mounting: Error {result}");
+            }
+
+            try
+            {
+                // Find an available drive letter
+                char driveLetter = FindAvailableDriveLetter();
+                Log.Debug("Found available drive letter: {Letter}", driveLetter);
+
+                var attachParams = new VirtualDiskInterop.AttachVirtualDiskParametersV1
+                {
+                    Version = 1,
+                    Reserved = 0
+                };
+
+                var attachFlags = readOnly 
+                    ? VirtualDiskInterop.AttachVirtualDiskFlags.ReadOnly
+                    : VirtualDiskInterop.AttachVirtualDiskFlags.None;
+
+                // Attach with automatic drive letter assignment
+                result = VirtualDiskInterop.AttachVirtualDisk(
+                    handle,
+                    IntPtr.Zero,
+                    attachFlags,
+                    0,
+                    ref attachParams,
+                    IntPtr.Zero);
+
+                win32 = Marshal.GetLastWin32Error();
+                if (result != 0)
+                {
+                    Log.Error("AttachVirtualDisk (Mount) FAILED: result={Result}, Win32={Win32} (0x{Win32X})", result, win32, win32.ToString("X"));
+                    throw new InvalidOperationException($"Failed to attach virtual disk: Error {result}");
+                }
+
+                Log.Information("Successfully mounted VHDX to drive letter: {Letter}", driveLetter);
+                
+                // Track the mounted disk so we can dismount it later
+                lock (_lock)
+                {
+                    _mountedDisks[path] = handle;
+                }
+                
+                return driveLetter;
+            }
+            catch
+            {
+                handle.Dispose();
+                throw;
+            }
         });
+    }
+
+    private static char FindAvailableDriveLetter()
+    {
+        // Get all currently used drive letters
+        var usedDrives = DriveInfo.GetDrives().Select(d => char.ToUpper(d.Name[0])).ToHashSet();
+
+        // Find first available letter starting from Z and going backwards
+        for (char letter = 'Z'; letter >= 'D'; letter--)
+        {
+            if (!usedDrives.Contains(letter))
+            {
+                return letter;
+            }
+        }
+
+        throw new InvalidOperationException("No available drive letters found");
     }
 
     public async Task MountToFolderAsync(string path, string mountPoint, bool readOnly = true)
@@ -170,9 +266,70 @@ public class VirtualDiskService : IVirtualDiskService
 
     public async Task DismountAsync(string path)
     {
-        // This would require proper detach logic
-        // Placeholder for now
-        await Task.CompletedTask;
+        await Task.Run(() =>
+        {
+            Log.Debug("DismountAsync: path={Path}", path);
+            
+            SafeFileHandle? handle = null;
+            lock (_lock)
+            {
+                if (_mountedDisks.TryGetValue(path, out handle))
+                {
+                    _mountedDisks.Remove(path);
+                }
+            }
+
+            if (handle != null && !handle.IsInvalid)
+            {
+                try
+                {
+                    Log.Debug("Calling DetachVirtualDisk for {Path}", path);
+                    uint result = VirtualDiskInterop.DetachVirtualDisk(handle, 0, 0);
+                    if (result != 0)
+                    {
+                        Log.Warning("DetachVirtualDisk failed: result={Result} for {Path}", result, path);
+                    }
+                    else
+                    {
+                        Log.Information("Successfully dismounted VHDX: {Path}", path);
+                    }
+                }
+                finally
+                {
+                    handle.Dispose();
+                }
+            }
+            else
+            {
+                Log.Warning("DismountAsync: No mounted disk found for path {Path}", path);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Dismounts all tracked VHDXs. Call this on application exit.
+    /// </summary>
+    public void DismountAll()
+    {
+        Log.Debug("DismountAll: dismounting {Count} VHDXs", _mountedDisks.Count);
+        
+        List<string> paths;
+        lock (_lock)
+        {
+            paths = _mountedDisks.Keys.ToList();
+        }
+
+        foreach (var path in paths)
+        {
+            try
+            {
+                DismountAsync(path).GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error dismounting VHDX: {Path}", path);
+            }
+        }
     }
 
     public async Task<IAttachedVhdx> AttachVhdxForWriteAsync(string path, CancellationToken cancellationToken = default)
@@ -347,6 +504,95 @@ public class VirtualDiskService : IVirtualDiskService
                     string physicalPath = Marshal.PtrToStringUni(pathBuffer) ?? throw new InvalidOperationException("Failed to read virtual disk path");
                     physicalPath = physicalPath.TrimEnd('\0');
                     Log.Information("CreateAndAttach succeeded: PhysicalPath={PhysicalPath}", physicalPath);
+                    return new AttachedVhdx(handle, physicalPath);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(pathBuffer);
+                }
+            }
+            catch
+            {
+                handle.Dispose();
+                throw;
+            }
+        }, cancellationToken);
+    }
+
+    public async Task<IAttachedVhdx> AttachVhdxReadOnlyAsync(string path, CancellationToken cancellationToken = default)
+    {
+        return await Task.Run(() =>
+        {
+            Log.Debug("AttachVhdxReadOnly: path={Path}", path);
+            var storageType = new VirtualDiskInterop.VirtualStorageTypeStruct
+            {
+                DeviceId = VirtualDiskInterop.VirtualStorageType.VHDX,
+                VendorId = new Guid("EC984AEC-A0F9-47E9-901F-71415A66345B")
+            };
+
+            var openParams = new VirtualDiskInterop.OpenVirtualDiskParametersV2
+            {
+                Version = VirtualDiskInterop.OpenVirtualDiskVersion.Version2,
+                ReadOnly = true,
+                GetInfoOnly = false,
+                ResiliencyGuid = Guid.Empty
+            };
+
+            uint result = VirtualDiskInterop.OpenVirtualDisk(
+                ref storageType,
+                path,
+                VirtualDiskInterop.VirtualDiskAccessMask.AttachReadOnly,
+                VirtualDiskInterop.OpenVirtualDiskFlags.None,
+                ref openParams,
+                out SafeFileHandle handle);
+
+            int win32 = Marshal.GetLastWin32Error();
+            if (result != 0)
+            {
+                Log.Error("OpenVirtualDisk (ReadOnly) FAILED: result={Result}, Win32={Win32} (0x{Win32X}), path={Path}", result, win32, win32.ToString("X"), path);
+                throw new InvalidOperationException($"Failed to open virtual disk read-only: Error {result}");
+            }
+            Log.Debug("OpenVirtualDisk (ReadOnly) succeeded");
+
+            try
+            {
+                var attachParams = new VirtualDiskInterop.AttachVirtualDiskParametersV1
+                {
+                    Version = 1,
+                    Reserved = 0
+                };
+
+                result = VirtualDiskInterop.AttachVirtualDisk(
+                    handle,
+                    IntPtr.Zero,
+                    VirtualDiskInterop.AttachVirtualDiskFlags.NoDriveLetter | VirtualDiskInterop.AttachVirtualDiskFlags.ReadOnly,
+                    0,
+                    ref attachParams,
+                    IntPtr.Zero);
+
+                win32 = Marshal.GetLastWin32Error();
+                if (result != 0)
+                {
+                    Log.Error("AttachVirtualDisk (ReadOnly) FAILED: result={Result}, Win32={Win32} (0x{Win32X})", result, win32, win32.ToString("X"));
+                    throw new InvalidOperationException($"Failed to attach virtual disk read-only: Error {result}");
+                }
+                Log.Debug("AttachVirtualDisk (ReadOnly) succeeded");
+
+                uint pathSize = 260 * 2; // 260 chars * 2 bytes for Unicode
+                IntPtr pathBuffer = Marshal.AllocHGlobal((int)pathSize);
+                try
+                {
+                    result = VirtualDiskInterop.GetVirtualDiskPhysicalPath(handle, ref pathSize, pathBuffer);
+                    win32 = Marshal.GetLastWin32Error();
+                    if (result != 0)
+                    {
+                        Log.Error("GetVirtualDiskPhysicalPath (ReadOnly) FAILED: result={Result}, Win32={Win32} (0x{Win32X})", result, win32, win32.ToString("X"));
+                        throw new InvalidOperationException($"Failed to get virtual disk path: Error {result}");
+                    }
+
+                    string physicalPath = Marshal.PtrToStringUni(pathBuffer) ?? throw new InvalidOperationException("Failed to read virtual disk path");
+                    physicalPath = physicalPath.TrimEnd('\0');
+                    Log.Information("GetVirtualDiskPhysicalPath (ReadOnly): {PhysicalPath}", physicalPath);
                     return new AttachedVhdx(handle, physicalPath);
                 }
                 finally
