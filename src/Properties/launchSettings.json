@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Chronos.App (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "Chronos.App (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

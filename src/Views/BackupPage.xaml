@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<Page
+    x:Class="Chronos.App.Views.BackupPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer Padding="24,20,24,20"
+                   HorizontalScrollBarVisibility="Disabled"
+                   HorizontalAlignment="Stretch">
+        <StackPanel Spacing="24" HorizontalAlignment="Stretch">
+
+            <!-- Header -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="Create Backup" Style="{StaticResource TitleTextBlockStyle}" />
+                <TextBlock Text="Create a disk or partition image backup with optional compression and verification."
+                           Style="{StaticResource BodyTextBlockStyle}" Opacity="0.7" />
+            </StackPanel>
+
+            <!-- Source Selection -->
+            <StackPanel Spacing="12">
+                <TextBlock Text="SOURCE" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
+                           CharacterSpacing="80" />
+                <StackPanel Spacing="8"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="20">
+
+                    <InfoBar x:Name="DiskInfoBar" IsOpen="True" IsClosable="False" Severity="Informational"
+                             Title="Select a source disk or partition to back up."
+                             Message="Available disks are listed below. Select Entire disk or choose a specific partition." />
+
+                    <ComboBox x:Name="DiskCombo" Header="Disk" HorizontalAlignment="Stretch"
+                              ItemsSource="{Binding AvailableDisks}"
+                              SelectedItem="{Binding SelectedDisk, Mode=TwoWay}"
+                              PlaceholderText="Select a disk..." />
+
+                    <ComboBox x:Name="PartitionCombo" Header="Partition (optional)" HorizontalAlignment="Stretch"
+                              ItemsSource="{Binding AvailablePartitions}"
+                              SelectedItem="{Binding SelectedPartition, Mode=TwoWay}"
+                              PlaceholderText="Entire disk"
+                              IsEnabled="{Binding HasPartitions}" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Destination -->
+            <StackPanel Spacing="12">
+                <TextBlock Text="DESTINATION" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
+                           CharacterSpacing="80" />
+
+                <StackPanel Spacing="12"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="20">
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="DestinationPathBox" Header="Image file path"
+                             Text="{Binding DestinationPath, Mode=TwoWay}"
+                             PlaceholderText="C:\Backups\my-image.vhdx" />
+                        <Button Grid.Column="1" Content="Browse..." VerticalAlignment="Bottom" Margin="8,0,0,0"
+                            Click="OnBrowseDestinationClick" />
+                    </Grid>
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Options -->
+            <StackPanel Spacing="12">
+                <TextBlock Text="OPTIONS" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
+                           CharacterSpacing="80" />
+
+                <StackPanel Spacing="16"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="20">
+
+                    <ComboBox Header="Backup type" SelectedIndex="0" HorizontalAlignment="Stretch">
+                        <ComboBoxItem Content="Full Disk" />
+                        <ComboBoxItem Content="Partition" />
+                        <ComboBoxItem Content="Disk Clone" />
+                        <ComboBoxItem Content="Partition Clone" />
+                    </ComboBox>
+
+                    <StackPanel>
+                        <TextBlock Text="Compression level (Zstandard)" Margin="0,0,0,4" />
+                        <Slider x:Name="CompressionSlider" Minimum="1" Maximum="19" Value="3"
+                                StepFrequency="1" TickFrequency="1" SnapsTo="Ticks" />
+                        <TextBlock Opacity="0.5" FontSize="12">
+                            <Run Text="Level:" />
+                            <Run Text="{Binding Value, ElementName=CompressionSlider}" />
+                            <Run Text="— Lower = faster, Higher = smaller file" />
+                        </TextBlock>
+                    </StackPanel>
+
+                    <ToggleSwitch Header="Use Volume Shadow Copy (VSS)" IsOn="True"
+                                  OnContent="Enabled — consistent snapshot" OffContent="Disabled" />
+
+                    <ToggleSwitch Header="Verify after backup" IsOn="True"
+                                  OnContent="Will verify integrity" OffContent="Skip verification" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Progress -->
+            <StackPanel x:Name="ProgressPanel" Spacing="8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="20">
+                <TextBlock Text="Backup Progress" FontWeight="SemiBold" />
+                <ProgressBar x:Name="BackupProgress" Minimum="0" Maximum="100" Value="{Binding ProgressPercentage}" />
+                <Grid>
+                    <TextBlock x:Name="ProgressStatus" Text="{Binding StatusMessage}" Opacity="0.6" />
+                    <TextBlock x:Name="ProgressPercent" Text="{Binding ProgressText}" HorizontalAlignment="Right" Opacity="0.6" />
+                </Grid>
+            </StackPanel>
+
+            <!-- Action Buttons -->
+            <Grid Margin="0,8,0,24">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Button x:Name="StartBackupBtn" Style="{StaticResource AccentButtonStyle}"
+                        Content="Start Backup" Padding="24,10" 
+                        IsEnabled="{Binding CanStartBackup}"
+                        Command="{Binding StartBackupCommand}" />
+                <Button Grid.Column="1" Content="Cancel" Padding="24,10" Margin="8,0,0,0"
+                        IsEnabled="{Binding IsBackupInProgress}"
+                        Command="{Binding CancelBackupCommand}" />
+            </Grid>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>

@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<Page
+    x:Class="Chronos.App.Views.RestorePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <ScrollViewer Padding="24,20,24,20"
+                   HorizontalScrollBarVisibility="Disabled"
+                   HorizontalAlignment="Stretch">
+        <StackPanel Spacing="24" HorizontalAlignment="Stretch">
+
+            <!-- Header -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="Restore Image" Style="{StaticResource TitleTextBlockStyle}" />
+                <TextBlock Text="Restore a previously created disk image to a target disk or partition."
+                           Style="{StaticResource BodyTextBlockStyle}" Opacity="0.7" />
+            </StackPanel>
+
+            <!-- Source Image -->
+            <StackPanel Spacing="12">
+                <TextBlock Text="SOURCE IMAGE" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
+                           CharacterSpacing="80" />
+
+                <StackPanel Spacing="12"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="20">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Header="Image file"
+                             Text="{Binding SourceImagePath, Mode=TwoWay}"
+                             PlaceholderText="Select a .vhdx image file..." />
+                        <Button Grid.Column="1" Content="Browse..." VerticalAlignment="Bottom" Margin="8,0,0,0"
+                            Click="OnBrowseImageClick" />
+                    </Grid>
+
+                    <!-- Image metadata card -->
+                    <StackPanel x:Name="MetadataPanel" Visibility="Collapsed" Spacing="4"
+                                Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                                CornerRadius="6" Padding="16,12">
+                        <TextBlock Text="Image Details" FontWeight="SemiBold" FontSize="13" />
+                        <TextBlock Text="Created: —" Opacity="0.7" FontSize="12" />
+                        <TextBlock Text="Original size: —" Opacity="0.7" FontSize="12" />
+                        <TextBlock Text="Compressed: —" Opacity="0.7" FontSize="12" />
+                        <TextBlock Text="Compression: Zstandard (level 3)" Opacity="0.7" FontSize="12" />
+                    </StackPanel>
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Target Disk -->
+            <StackPanel Spacing="12">
+                <TextBlock Text="TARGET" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
+                           CharacterSpacing="80" />
+
+                <StackPanel Spacing="12"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="20">
+
+                    <InfoBar IsOpen="True" IsClosable="False" Severity="Warning"
+                             Title="Warning"
+                             Message="Restoring an image will OVERWRITE all data on the selected target. This cannot be undone." />
+
+                    <ComboBox Header="Target disk" HorizontalAlignment="Stretch"
+                              ItemsSource="{Binding AvailableDisks}"
+                              SelectedItem="{Binding SelectedTargetDisk, Mode=TwoWay}"
+                              PlaceholderText="Select target disk..." />
+
+                    <ComboBox Header="Target partition (optional)" HorizontalAlignment="Stretch"
+                              ItemsSource="{Binding AvailableTargetPartitions}"
+                              SelectedItem="{Binding SelectedTargetPartition, Mode=TwoWay}"
+                              PlaceholderText="Whole disk"
+                              IsEnabled="{Binding HasTargetPartitions}" />
+
+                    <ToggleSwitch Header="Verify during restore" IsOn="True"
+                                  OnContent="Integrity check active" OffContent="Skip verification" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Progress -->
+            <StackPanel x:Name="ProgressPanel" Visibility="Collapsed" Spacing="8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="20">
+                <TextBlock Text="Restore Progress" FontWeight="SemiBold" />
+                <ProgressBar Minimum="0" Maximum="100" Value="0" />
+                <Grid>
+                    <TextBlock Text="Idle" Opacity="0.6" />
+                    <TextBlock Text="0%" HorizontalAlignment="Right" Opacity="0.6" />
+                </Grid>
+            </StackPanel>
+
+            <!-- Action -->
+            <Grid Margin="0,8,0,24">
+                <Button Style="{StaticResource AccentButtonStyle}"
+                        Content="Start Restore" Padding="24,10" IsEnabled="False" />
+            </Grid>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>

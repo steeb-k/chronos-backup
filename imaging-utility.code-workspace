@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../AppData/Local/Chronos/Logs"
+		}
+	],
+	"settings": {}
+}

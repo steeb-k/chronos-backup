@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<Window
+    x:Class="Chronos.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="Chronos">
+
+    <Grid x:Name="RootGrid" SizeChanged="OnRootGridSizeChanged">
+        <NavigationView
+                x:Name="NavView"
+                IsBackButtonVisible="Collapsed"
+                IsSettingsVisible="False"
+                IsPaneToggleButtonVisible="False"
+                IsTitleBarAutoPaddingEnabled="False"
+                PaneDisplayMode="Left"
+                IsPaneOpen="True"
+                OpenPaneLength="220"
+                SelectionChanged="NavView_SelectionChanged"
+                Loaded="NavView_Loaded"
+                Margin="0" Padding="0"
+                BorderThickness="0">
+
+                <NavigationView.Resources>
+                    <Thickness x:Key="NavigationViewContentMargin">0,0,0,0</Thickness>
+                    <Thickness x:Key="NavigationViewContentGridBorderThickness">0</Thickness>
+                    <Thickness x:Key="NavigationViewHeaderMargin">0,0,0,0</Thickness>
+                </NavigationView.Resources>
+
+                <NavigationView.PaneHeader>
+                    <Grid Margin="8,0,8,12" HorizontalAlignment="Stretch">
+                        <Image x:Name="LogoLight" Source="/Assets/logoLight.png" Stretch="Uniform"
+                               HorizontalAlignment="Stretch" Visibility="Collapsed" />
+                        <Image x:Name="LogoDark" Source="/Assets/logoDark.png" Stretch="Uniform"
+                               HorizontalAlignment="Stretch" Visibility="Collapsed" />
+                    </Grid>
+                </NavigationView.PaneHeader>
+
+                <NavigationView.MenuItems>
+                    <NavigationViewItem Content="Backup" Tag="backup">
+                        <NavigationViewItem.Icon>
+                            <FontIcon Glyph="&#xE74E;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem Content="Restore" Tag="restore">
+                        <NavigationViewItem.Icon>
+                            <FontIcon Glyph="&#xE777;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem Content="Verify" Tag="verify">
+                        <NavigationViewItem.Icon>
+                            <FontIcon Glyph="&#xE73E;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem Content="Browse Image" Tag="browse">
+                        <NavigationViewItem.Icon>
+                            <FontIcon Glyph="&#xE8B7;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                </NavigationView.MenuItems>
+
+                <NavigationView.FooterMenuItems>
+                    <NavigationViewItem Content="Options" Tag="options">
+                        <NavigationViewItem.Icon>
+                            <FontIcon Glyph="&#xE713;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                </NavigationView.FooterMenuItems>
+
+                <Frame x:Name="ContentFrame" Margin="0" Padding="0"
+                       HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
+            </NavigationView>
+
+        <!-- Top 48px of content area: draggable + double-click to maximize -->
+        <Border x:Name="ContentTopDrag" Height="48" VerticalAlignment="Top"
+                HorizontalAlignment="Stretch" Margin="220,0,138,0"
+                Background="Transparent" DoubleTapped="OnContentTopDoubleTapped" />
+
+        <!-- Window controls overlaid top-right -->
+        <StackPanel Orientation="Horizontal"
+                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                    Spacing="0" Margin="0,4,4,0">
+            <Button x:Name="MinimizeBtn" Style="{StaticResource CaptionButtonStyle}"
+                    Width="46" Height="32" Click="OnMinimizeClick"
+                    ToolTipService.ToolTip="Minimize">
+                <FontIcon Glyph="&#xE921;" FontSize="10" />
+            </Button>
+            <Button x:Name="MaximizeBtn" Style="{StaticResource CaptionButtonStyle}"
+                    Width="46" Height="32" Click="OnMaximizeClick"
+                    ToolTipService.ToolTip="Maximize">
+                <FontIcon x:Name="MaximizeIcon" Glyph="&#xE922;" FontSize="10" />
+            </Button>
+            <Button x:Name="CloseBtn" Style="{StaticResource CloseButtonStyle}"
+                    Width="46" Height="32" Click="OnCloseClick"
+                    ToolTipService.ToolTip="Close">
+                <FontIcon Glyph="&#xE8BB;" FontSize="10" />
+            </Button>
+        </StackPanel>
+    </Grid>
+</Window>
