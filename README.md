@@ -2,8 +2,6 @@
 
 <div align="center">
 
-![Chronos Logo](docs/logo.png)
-
 ![Screenshot](screenshot.png)
 
 **Modern Disk Imaging Utility for Windows**
