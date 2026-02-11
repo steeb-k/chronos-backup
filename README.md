@@ -42,16 +42,58 @@ Download the latest self-contained build from [Releases](https://github.com/stee
 
 ### Build from Source
 
+#### Prerequisites
+
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- Windows 10 SDK (19041 or later)
+- Visual Studio 2022 (optional, for IDE development)
+
+#### Debug Build
+
 ```powershell
 git clone https://github.com/steeb-k/chronos-backup.git
 cd chronos-backup
 
-# Build for your platform (x86, x64, or ARM64)
+# Build for x64
 dotnet build Chronos.sln -p:Platform=x64
 
-# Or run directly
-dotnet run --project src/Chronos.App.csproj -p:Platform=x64
+# Build for ARM64
+dotnet build Chronos.sln -p:Platform=ARM64
+
+# Build for x86
+dotnet build Chronos.sln -p:Platform=x86
 ```
+
+Output location: `src/bin/<Platform>/Debug/net10.0-windows10.0.19041.0/`
+
+#### Release Build (Self-Contained)
+
+Self-contained builds include the .NET runtime and can run on machines without .NET installed.
+
+```powershell
+# x64 Release
+dotnet publish src/Chronos.App.csproj -c Release -r win-x64 --self-contained -p:Platform=x64
+
+# ARM64 Release
+dotnet publish src/Chronos.App.csproj -c Release -r win-arm64 --self-contained -p:Platform=ARM64
+
+# x86 Release
+dotnet publish src/Chronos.App.csproj -c Release -r win-x86 --self-contained -p:Platform=x86
+```
+
+Output location: `src/bin/<Platform>/Release/net10.0-windows10.0.19041.0/win-<rid>/publish/`
+
+#### Run from Source
+
+```powershell
+# Run x64 debug build
+dotnet run --project src/Chronos.App.csproj -p:Platform=x64
+
+# Run ARM64 debug build
+dotnet run --project src/Chronos.App.csproj -p:Platform=ARM64
+```
+
+> **Note:** Cross-compilation works (e.g., building ARM64 on x64), but you must run the binary on matching hardware.
 
 ## Usage
 
