@@ -1,19 +1,2 @@
 <Solution>
-  <Configurations>
-    <Platform Name="x86" />
-    <Platform Name="x64" />
-    <Platform Name="ARM64" />
-  </Configurations>
-  <Folder Name="/src/">
-    <Project Path="src/Chronos.App.csproj" />
-    <Project Path="src/Chronos.Common/Chronos.Common.csproj" />
-    <Project Path="src/Chronos.Core/Chronos.Core.csproj" />
-    <Project Path="src/Chronos.Native/Chronos.Native.csproj" />
-  </Folder>
-  <Folder Name="/tests/">
-    <Project Path="tests/AllocatedRangesTestHarness/AllocatedRangesTestHarness.csproj" />
-    <Project Path="tests/Chronos.Core.Tests/Chronos.Core.Tests.csproj" />
-    <Project Path="tests/Chronos.Integration.Tests/Chronos.Integration.Tests.csproj" />
-    <Project Path="tests/VirtualDiskTestHarness/VirtualDiskTestHarness.csproj" />
-  </Folder>
 </Solution>
