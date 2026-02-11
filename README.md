@@ -9,7 +9,9 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![.NET](https://img.shields.io/badge/.NET-10.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue.svg)](https://www.microsoft.com/windows)
-[![Architecture](https://img.shields.io/badge/Architecture-x86%20%7C%20x64%20%7C%20ARM64-green.svg)](https://github.com/steeb-k/chronos-backup)
+[![Architecture](https://img.shields.io/badge/Architecture-x64%20%7C%20ARM64-green.svg)](https://github.com/steeb-k/chronos-backup)
+[![ARM64](https://img.shields.io/badge/ARM64-Native-brightgreen.svg)](https://github.com/steeb-k/chronos-backup)
+[![4K Sectors](https://img.shields.io/badge/4K%20Sectors-Supported-brightgreen.svg)](https://github.com/steeb-k/chronos-backup)
 
 </div>
 
@@ -17,8 +19,14 @@
 
 Chronos is an open-source disk imaging utility for Windows built with WinUI 3. It handles disk and partition backup, restore, cloning, verification, and mounting, with VSS support for live system backups.
 
+**Native ARM64 support** — Chronos is one of the few disk imaging tools that runs natively on Windows on ARM. No emulation, no x64 translation layer. Built and tested on ARM64 hardware from day one.
+
+**4K-native and UFS drive support** — Chronos correctly handles 4K-aligned sector sizes used by modern storage hardware including UFS drives found in Snapdragon-based laptops and tablets. Most legacy imaging tools assume 512-byte sectors and silently corrupt data on these drives.
+
 ### Features
 
+- **Native ARM64 support** — first-class Windows on ARM, no emulation
+- **4K-native sector support** — works with UFS, NVMe, and other 4K-aligned drives
 - **WinUI 3 interface** with Mica/Acrylic backdrop
 - **Full disk and partition backup** to VHDX
 - **Disk and partition cloning** (direct disk-to-disk or partition-to-partition)
@@ -26,7 +34,8 @@ Chronos is an open-source disk imaging utility for Windows built with WinUI 3. I
 - **VSS integration** for consistent snapshots of running systems
 - **Image verification** with integrity checks and SHA-256 hashing
 - **VHDX mounting** to browse image contents via a drive letter
-- **x86, x64, and ARM64** support
+- **Sleep prevention** — automatically blocks system sleep during operations
+- **In-app updates** — checks for updates on startup and downloads installers directly
 
 ## Requirements
 
@@ -148,6 +157,27 @@ dotnet run --project src/Chronos.App.csproj -p:Platform=ARM64
 3. Optionally toggle **Mount read-only**
 4. Click **Mount** — the image is attached as a drive letter
 5. Click **Dismount** when finished
+
+## Compatibility
+
+### Architectures
+
+| Architecture | Status | Notes |
+|---|---|---|
+| **x64 (AMD64)** | ✅ Fully supported | Primary development platform |
+| **ARM64 (AArch64)** | ✅ Fully supported | Native ARM64 binary, no emulation |
+| **x86** | ✅ Supported | 32-bit builds available |
+
+### Storage Hardware
+
+| Drive Type | Sector Size | Status |
+|---|---|---|
+| Traditional HDD/SSD (NVMe, SATA) | 512 bytes | ✅ Supported |
+| Advanced Format drives | 4096 bytes (4Kn) | ✅ Supported |
+| UFS (Universal Flash Storage) | 4096 bytes | ✅ Supported |
+| 512e emulation drives | 512 bytes / 4096 physical | ✅ Supported |
+
+Many popular imaging tools (Clonezilla, Macrium Reflect, some dd-based workflows) assume 512-byte sectors and either fail outright or produce corrupted images on 4K-native drives. Chronos reads the actual sector size from the hardware and aligns all I/O accordingly.
 
 ## Architecture
 
