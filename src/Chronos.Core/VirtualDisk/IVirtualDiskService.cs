@@ -21,9 +21,10 @@ public interface IVirtualDiskService
     /// </summary>
     /// <param name="path">The path where the VHDX will be created.</param>
     /// <param name="maxSizeBytes">The maximum size in bytes.</param>
+    /// <param name="sectorSizeInBytes">The logical sector size (512 or 4096). Defaults to 512.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A task that completes when the VHDX is created.</returns>
-    Task CreateDynamicVhdxAsync(string path, long maxSizeBytes, CancellationToken cancellationToken = default);
+    Task CreateDynamicVhdxAsync(string path, long maxSizeBytes, uint sectorSizeInBytes = 512, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Opens an existing VHDX file.

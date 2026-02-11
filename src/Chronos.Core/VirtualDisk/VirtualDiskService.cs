@@ -60,11 +60,11 @@ public class VirtualDiskService : IVirtualDiskService
     private readonly Dictionary<string, SafeFileHandle> _mountedDisks = new();
     private readonly object _lock = new();
 
-    public async Task CreateDynamicVhdxAsync(string path, long maxSizeBytes, CancellationToken cancellationToken = default)
+    public async Task CreateDynamicVhdxAsync(string path, long maxSizeBytes, uint sectorSizeInBytes = 512, CancellationToken cancellationToken = default)
     {
         await Task.Run(() =>
         {
-            Log.Debug("CreateVirtualDisk: path={Path}, maxSizeBytes={Size}", path, maxSizeBytes);
+            Log.Debug("CreateVirtualDisk: path={Path}, maxSizeBytes={Size}, sectorSize={SectorSize}", path, maxSizeBytes, sectorSizeInBytes);
             var storageType = new VirtualDiskInterop.VirtualStorageTypeStruct
             {
                 DeviceId = VirtualDiskInterop.VirtualStorageType.VHDX,
@@ -77,8 +77,8 @@ public class VirtualDiskService : IVirtualDiskService
                 UniqueId = Guid.NewGuid(),
                 MaximumSize = (ulong)maxSizeBytes,
                 BlockSizeInBytes = 32 * 1024 * 1024, // 32 MB block size
-                SectorSizeInBytes = 512,
-                PhysicalSectorSizeInBytes = 512,
+                SectorSizeInBytes = sectorSizeInBytes,
+                PhysicalSectorSizeInBytes = sectorSizeInBytes,
                 ParentPath = IntPtr.Zero,
                 SourcePath = IntPtr.Zero
             };
