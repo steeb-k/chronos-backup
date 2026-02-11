@@ -241,6 +241,38 @@ public class RestoreEngine : IRestoreEngine
                 }
             }
 
+            // Validate sector size compatibility
+            var sidecar = await ImageSidecar.LoadAsync(job.SourceImagePath).ConfigureAwait(false);
+            if (sidecar?.SourceSectorSize is uint sourceSectorSize && sourceSectorSize > 0)
+            {
+                // Query target disk sector size
+                uint targetSectorSize = 512; // default
+                try
+                {
+                    using var targetHandle = await _diskReader.OpenDiskAsync(targetDisk, CancellationToken.None).ConfigureAwait(false);
+                    targetSectorSize = targetHandle.SectorSize;
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Could not query target disk sector size, assuming 512 bytes");
+                }
+
+                if (sourceSectorSize != targetSectorSize)
+                {
+                    string errorMsg = $"Sector size mismatch: source image has {sourceSectorSize}-byte sectors, " +
+                        $"target disk has {targetSectorSize}-byte sectors. " +
+                        $"Cross-sector-size restore is not supported because GPT partition tables use sector-relative addresses. " +
+                        $"Restoring would corrupt the partition layout.";
+                    Log.Error(errorMsg);
+                    throw new InvalidOperationException(errorMsg);
+                }
+                Log.Debug("Sector size validation passed: source={Source}, target={Target}", sourceSectorSize, targetSectorSize);
+            }
+            else
+            {
+                Log.Debug("No source sector size in sidecar metadata (legacy image), skipping sector size validation");
+            }
+
             Log.Information("Restore validation passed: Source={Source} ({SourceSize} bytes), Target={Target} ({TargetSize} bytes)",
                 job.SourceImagePath, sourceSize, job.TargetPath, targetSize);
         }

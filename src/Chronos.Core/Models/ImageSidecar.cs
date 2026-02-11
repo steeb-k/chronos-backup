@@ -39,13 +39,16 @@ public class ImageSidecar
     /// <summary>Source disk number at time of backup.</summary>
     public uint SourceDiskNumber { get; set; }
 
+    /// <summary>Sector size of the source disk in bytes (typically 512 or 4096).</summary>
+    public uint? SourceSectorSize { get; set; }
+
     /// <summary>Partition entries from the source disk.</summary>
     public List<SidecarPartition> Partitions { get; set; } = new();
 
     /// <summary>
     /// Builds a sidecar from a DiskInfo and its partitions.
     /// </summary>
-    public static ImageSidecar FromDisk(DiskInfo disk, IEnumerable<PartitionInfo> partitions)
+    public static ImageSidecar FromDisk(DiskInfo disk, IEnumerable<PartitionInfo> partitions, uint? sectorSize = null)
     {
         var sidecar = new ImageSidecar
         {
@@ -54,6 +57,7 @@ public class ImageSidecar
             DiskSerial = disk.SerialNumber,
             DiskSizeBytes = disk.Size,
             SourceDiskNumber = disk.DiskNumber,
+            SourceSectorSize = sectorSize,
         };
 
         foreach (var p in partitions)

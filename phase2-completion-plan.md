@@ -591,3 +591,43 @@ After Phase 2 completion, consider:
 - Split archives for DVD/USB distribution
 - Command-line interface for automation
 - API for third-party integration
+
+---
+
+## Cross-Sector-Size Restore Support
+
+**Status**: Blocked with clear error message (Phase 1 implementation)  
+**Target**: Phase 2 or 3
+
+### Background
+Restoring images between disks with different sector sizes (e.g., 512B HDD → 4K UFS) requires GPT partition table translation because GPT uses LBA (Logical Block Address) which is sector-relative.
+
+### Current Implementation (Phase 1)
+- Source sector size stored in sidecar metadata during backup
+- Restore validates sector size match before proceeding
+- Clear error message explains incompatibility
+
+### Future Implementation (GPT Translation)
+1. **GPT Parser** (`Chronos.Core/Disk/GptParser.cs`)
+   - Parse protective MBR at LBA 0
+   - Parse GPT header at LBA 1
+   - Parse partition entries (LBA 2-33)
+   - Validate CRC32 checksums
+
+2. **GPT Writer with LBA Translation**
+   - Recalculate LBA values: `new_lba = (old_lba * old_sector_size) / new_sector_size`
+   - Verify partition alignment to new sector boundaries
+   - Regenerate CRC32 checksums
+   - Write primary and backup GPT
+
+3. **Alignment Validation**
+   - Check all partitions align to target sector boundaries
+   - Fail gracefully with clear message if alignment impossible
+
+4. **NTFS Boot Sector Update** (optional)
+   - Parse NTFS boot sector `BytesPerSector` field
+   - Update if sector size changed
+
+### Complexity
+- 4K → 512B: Easier (each 4K sector maps to 8 × 512B)
+- 512B → 4K: Harder (must verify all partitions are 4K-aligned)

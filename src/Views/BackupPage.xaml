@@ -6,7 +6,12 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:local="using:Chronos.App.Views"
+    xmlns:converters="using:Chronos.App.Converters"
     mc:Ignorable="d">
+
+    <Page.Resources>
+        <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+    </Page.Resources>
 
     <ScrollViewer Padding="24,20,24,20"
                    HorizontalScrollBarVisibility="Disabled"
@@ -21,7 +26,7 @@
             </StackPanel>
 
             <!-- Source Selection -->
-            <StackPanel Spacing="12">
+            <StackPanel Spacing="12" Visibility="{Binding IsInputEnabled, Converter={StaticResource BoolToVisibilityConverter}}">
                 <TextBlock Text="SOURCE" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
                            CharacterSpacing="80" />
                 <StackPanel Spacing="8"
@@ -60,7 +65,7 @@
             </StackPanel>
 
             <!-- Destination -->
-            <StackPanel Spacing="12">
+            <StackPanel Spacing="12" Visibility="{Binding IsInputEnabled, Converter={StaticResource BoolToVisibilityConverter}}">
                 <TextBlock Text="DESTINATION" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
                            CharacterSpacing="80" />
 
@@ -69,22 +74,29 @@
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1" CornerRadius="8" Padding="20">
 
+                    <TextBox Header="Backup Name" 
+                             Text="{Binding BackupName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             PlaceholderText="e.g., My Laptop Backup" />
+
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBox x:Name="DestinationPathBox" Header="Image file path"
-                             Text="{Binding DestinationPath, Mode=TwoWay}"
-                             PlaceholderText="C:\Backups\my-image.vhdx" />
-                        <Button Grid.Column="1" Content="Browse..." VerticalAlignment="Bottom" Margin="8,0,0,0"
-                            Click="OnBrowseDestinationClick" />
+                        <ComboBox Header="Target Drive" HorizontalAlignment="Stretch"
+                                  ItemsSource="{Binding AvailableTargetDrives}"
+                                  SelectedItem="{Binding SelectedTargetDrive, Mode=TwoWay}"
+                                  PlaceholderText="Select target drive..." />
+                        <Button Grid.Column="1" VerticalAlignment="Bottom" Margin="8,0,0,0"
+                                Command="{Binding LoadTargetDrivesCommand}" ToolTipService.ToolTip="Refresh drive list">
+                            <FontIcon Glyph="&#xE72C;" FontSize="14" />
+                        </Button>
                     </Grid>
                 </StackPanel>
             </StackPanel>
 
             <!-- Options -->
-            <StackPanel Spacing="12">
+            <StackPanel Spacing="12" Visibility="{Binding IsInputEnabled, Converter={StaticResource BoolToVisibilityConverter}}">
                 <TextBlock Text="OPTIONS" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
                            CharacterSpacing="80" />
 
@@ -98,6 +110,33 @@
 
                     <ToggleSwitch Header="Verify after backup" IsOn="True"
                                   OnContent="Will verify integrity" OffContent="Skip verification" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Backup In Progress Info (shown when backup is running) -->
+            <StackPanel Spacing="12" Visibility="{Binding IsBackupInProgress, Converter={StaticResource BoolToVisibilityConverter}}">
+                <TextBlock Text="BACKUP IN PROGRESS" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
+                           CharacterSpacing="80" />
+                <StackPanel Spacing="8"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="20">
+
+                    <InfoBar IsOpen="True" IsClosable="False" Severity="Informational"
+                             Title="Backup operation is in progress">
+                        <InfoBar.Content>
+                            <StackPanel Spacing="4">
+                                <TextBlock>
+                                    <Run Text="Source: " FontWeight="SemiBold" />
+                                    <Run Text="{Binding ActiveBackupSourceDescription}" />
+                                </TextBlock>
+                                <TextBlock TextWrapping="Wrap">
+                                    <Run Text="Destination: " FontWeight="SemiBold" />
+                                    <Run Text="{Binding ActiveBackupDestinationPath}" />
+                                </TextBlock>
+                            </StackPanel>
+                        </InfoBar.Content>
+                    </InfoBar>
                 </StackPanel>
             </StackPanel>
 

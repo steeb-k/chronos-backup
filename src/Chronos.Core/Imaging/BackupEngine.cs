@@ -123,7 +123,7 @@ public class BackupEngine : IBackupEngine
             }
 
             // Save sidecar metadata alongside the image
-            await SaveSidecarAsync(diskNumber, job.DestinationPath).ConfigureAwait(false);
+            await SaveSidecarAsync(diskNumber, job.DestinationPath, sourceHandle.SectorSize).ConfigureAwait(false);
 
             progressReporter?.Report(new OperationProgress
             {
@@ -241,7 +241,7 @@ public class BackupEngine : IBackupEngine
     /// Saves a sidecar JSON file alongside the image with disk/partition metadata
     /// so the restore UI can display a disk map without mounting the image.
     /// </summary>
-    private async Task SaveSidecarAsync(uint diskNumber, string destinationPath)
+    private async Task SaveSidecarAsync(uint diskNumber, string destinationPath, uint sectorSize)
     {
         try
         {
@@ -254,7 +254,7 @@ public class BackupEngine : IBackupEngine
                 return;
             }
 
-            var sidecar = ImageSidecar.FromDisk(disk, partitions);
+            var sidecar = ImageSidecar.FromDisk(disk, partitions, sectorSize);
             await sidecar.SaveAsync(destinationPath).ConfigureAwait(false);
         }
         catch (Exception ex)

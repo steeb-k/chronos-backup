@@ -34,10 +34,14 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBox Header="Default backup folder" PlaceholderText="C:\Backups"
-                                 Text="{Binding DefaultBackupPath, Mode=TwoWay}" />
-                        <Button Grid.Column="1" Content="Browse..." VerticalAlignment="Bottom" Margin="8,0,0,0"
-                                Click="OnBrowseBackupFolderClick" />
+                        <ComboBox Header="Default backup drive" HorizontalAlignment="Stretch"
+                                  ItemsSource="{Binding AvailableTargetDrives}"
+                                  SelectedItem="{Binding SelectedDefaultBackupDrive, Mode=TwoWay}"
+                                  PlaceholderText="Select a drive..." />
+                        <Button Grid.Column="1" VerticalAlignment="Bottom" Margin="8,0,0,0"
+                                Command="{Binding LoadTargetDrivesCommand}" ToolTipService.ToolTip="Refresh drive list">
+                            <FontIcon Glyph="&#xE72C;" FontSize="14" />
+                        </Button>
                     </Grid>
 
                     <StackPanel>

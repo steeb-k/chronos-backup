@@ -1,8 +1,10 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Chronos.App.Services;
+using Chronos.Common.Extensions;
 using Microsoft.UI.Xaml;
 using Serilog;
+using System.IO;
 
 namespace Chronos.App.ViewModels;
 
@@ -13,6 +15,8 @@ public partial class OptionsViewModel : ObservableObject
 
     [ObservableProperty] public partial int DefaultCompressionLevel { get; set; } = 3;
     [ObservableProperty] public partial string DefaultBackupPath { get; set; } = string.Empty;
+    [ObservableProperty] public partial List<TargetDriveInfo> AvailableTargetDrives { get; set; } = new();
+    [ObservableProperty] public partial TargetDriveInfo? SelectedDefaultBackupDrive { get; set; }
     [ObservableProperty] public partial bool UseVssByDefault { get; set; } = true;
     [ObservableProperty] public partial bool VerifyByDefault { get; set; } = true;
 
@@ -22,7 +26,26 @@ public partial class OptionsViewModel : ObservableObject
     public OptionsViewModel(ISettingsService? settingsService = null)
     {
         _settingsService = settingsService;
+        LoadTargetDrives();
         LoadSettings();
+    }
+
+    [RelayCommand]
+    private void LoadTargetDrives()
+    {
+        var drives = DriveInfo.GetDrives()
+            .Where(d => d.IsReady && d.DriveType == DriveType.Fixed)
+            .Select(d => new TargetDriveInfo
+            {
+                DriveLetter = d.Name.TrimEnd('\\'),
+                VolumeLabel = d.VolumeLabel,
+                FreeSpaceBytes = d.AvailableFreeSpace,
+                TotalSizeBytes = d.TotalSize
+            })
+            .OrderBy(d => d.DriveLetter)
+            .ToList();
+        
+        AvailableTargetDrives = drives;
     }
 
     private void LoadSettings()
@@ -38,6 +61,19 @@ public partial class OptionsViewModel : ObservableObject
             UseVssByDefault = _settingsService.UseVssByDefault;
             VerifyByDefault = _settingsService.VerifyByDefault;
             ThemeMode = _settingsService.ThemeMode;
+
+            // Select the drive that matches the stored DefaultBackupPath
+            if (!string.IsNullOrEmpty(DefaultBackupPath) && DefaultBackupPath.Length >= 2)
+            {
+                var driveLetter = DefaultBackupPath.Substring(0, 2); // e.g., "D:"
+                SelectedDefaultBackupDrive = AvailableTargetDrives.FirstOrDefault(d => 
+                    d.DriveLetter.StartsWith(driveLetter, StringComparison.OrdinalIgnoreCase));
+            }
+            
+            // If no match or no saved path, select first non-C drive
+            SelectedDefaultBackupDrive ??= AvailableTargetDrives.FirstOrDefault(d => 
+                !d.DriveLetter.StartsWith("C", StringComparison.OrdinalIgnoreCase))
+                ?? AvailableTargetDrives.FirstOrDefault();
         }
         finally
         {
@@ -63,6 +99,14 @@ public partial class OptionsViewModel : ObservableObject
     partial void OnDefaultBackupPathChanged(string value) => SaveSettings();
     partial void OnUseVssByDefaultChanged(bool value) => SaveSettings();
     partial void OnVerifyByDefaultChanged(bool value) => SaveSettings();
+
+    partial void OnSelectedDefaultBackupDriveChanged(TargetDriveInfo? value)
+    {
+        if (value is not null)
+        {
+            DefaultBackupPath = value.DriveLetter + "\\";
+        }
+    }
 
     partial void OnThemeModeChanged(int value)
     {
