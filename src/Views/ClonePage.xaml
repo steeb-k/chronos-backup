@@ -34,10 +34,20 @@
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1" CornerRadius="8" Padding="20">
 
-                    <ComboBox Header="Disk" HorizontalAlignment="Stretch"
-                              ItemsSource="{Binding AvailableDisks}"
-                              SelectedItem="{Binding SelectedDisk, Mode=TwoWay}"
-                              PlaceholderText="Select a disk..." />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox Header="Disk" HorizontalAlignment="Stretch"
+                                  ItemsSource="{Binding AvailableDisks}"
+                                  SelectedItem="{Binding SelectedDisk, Mode=TwoWay}"
+                                  PlaceholderText="Select a disk..." />
+                        <Button Grid.Column="1" VerticalAlignment="Bottom" Margin="8,0,0,0"
+                                Command="{Binding LoadDisksCommand}" ToolTipService.ToolTip="Refresh disk list">
+                            <FontIcon Glyph="&#xE72C;" FontSize="14" />
+                        </Button>
+                    </Grid>
 
                     <local:DiskMapControl x:Name="SourceDiskMap" Margin="0,4,0,0" />
 
@@ -61,10 +71,20 @@
                              Title="All data on the destination will be overwritten!"
                              Message="Double-check you have selected the correct destination." />
 
-                    <ComboBox Header="Disk" HorizontalAlignment="Stretch"
-                              ItemsSource="{Binding AvailableDestinationDisks}"
-                              SelectedItem="{Binding SelectedDestinationDisk, Mode=TwoWay}"
-                              PlaceholderText="Select destination disk..." />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox Header="Disk" HorizontalAlignment="Stretch"
+                                  ItemsSource="{Binding AvailableDestinationDisks}"
+                                  SelectedItem="{Binding SelectedDestinationDisk, Mode=TwoWay}"
+                                  PlaceholderText="Select destination disk..." />
+                        <Button Grid.Column="1" VerticalAlignment="Bottom" Margin="8,0,0,0"
+                                Command="{Binding LoadDisksCommand}" ToolTipService.ToolTip="Refresh disk list">
+                            <FontIcon Glyph="&#xE72C;" FontSize="14" />
+                        </Button>
+                    </Grid>
 
                     <local:DiskMapControl x:Name="DestDiskMap" Margin="0,4,0,0" />
 

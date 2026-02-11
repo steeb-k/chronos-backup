@@ -33,10 +33,20 @@
                              Title="Select a source disk or partition to back up."
                              Message="Available disks are listed below. Select Entire disk or choose a specific partition." />
 
-                    <ComboBox x:Name="DiskCombo" Header="Disk" HorizontalAlignment="Stretch"
-                              ItemsSource="{Binding AvailableDisks}"
-                              SelectedItem="{Binding SelectedDisk, Mode=TwoWay}"
-                              PlaceholderText="Select a disk..." />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox x:Name="DiskCombo" Header="Disk" HorizontalAlignment="Stretch"
+                                  ItemsSource="{Binding AvailableDisks}"
+                                  SelectedItem="{Binding SelectedDisk, Mode=TwoWay}"
+                                  PlaceholderText="Select a disk..." />
+                        <Button Grid.Column="1" VerticalAlignment="Bottom" Margin="8,0,0,0"
+                                Command="{Binding LoadDisksCommand}" ToolTipService.ToolTip="Refresh disk list">
+                            <FontIcon Glyph="&#xE72C;" FontSize="14" />
+                        </Button>
+                    </Grid>
 
                     <!-- Disk partition map -->
                     <local:DiskMapControl x:Name="SourceDiskMap" Margin="0,4,0,0" />

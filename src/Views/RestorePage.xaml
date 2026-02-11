@@ -76,10 +76,20 @@
                              Title="Warning"
                              Message="Restoring an image will OVERWRITE all data on the selected target. This cannot be undone." />
 
-                    <ComboBox Header="Target disk" HorizontalAlignment="Stretch"
-                              ItemsSource="{Binding AvailableDisks}"
-                              SelectedItem="{Binding SelectedTargetDisk, Mode=TwoWay}"
-                              PlaceholderText="Select target disk..." />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox Header="Target disk" HorizontalAlignment="Stretch"
+                                  ItemsSource="{Binding AvailableDisks}"
+                                  SelectedItem="{Binding SelectedTargetDisk, Mode=TwoWay}"
+                                  PlaceholderText="Select target disk..." />
+                        <Button Grid.Column="1" VerticalAlignment="Bottom" Margin="8,0,0,0"
+                                Command="{Binding LoadDisksCommand}" ToolTipService.ToolTip="Refresh disk list">
+                            <FontIcon Glyph="&#xE72C;" FontSize="14" />
+                        </Button>
+                    </Grid>
 
                     <!-- Target disk partition map -->
                     <local:DiskMapControl x:Name="TargetDiskMap" Margin="0,4,0,0" />

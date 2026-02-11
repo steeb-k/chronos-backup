@@ -67,23 +67,12 @@ public partial class BackupViewModel : ObservableObject
     {
         if (_diskEnumerator is not null)
         {
-            var disks = await _diskEnumerator.GetDisksAsync();
-            // Append refresh option
-            disks.Add(DiskInfo.RefreshSentinel);
-            AvailableDisks = disks;
+            AvailableDisks = await _diskEnumerator.GetDisksAsync();
         }
     }
 
     partial void OnSelectedDiskChanged(DiskInfo? value)
     {
-        // Handle refresh sentinel selection
-        if (value?.IsRefreshSentinel == true)
-        {
-            SelectedDisk = null;
-            _ = LoadDisksAsync();
-            return;
-        }
-
         _ = LoadPartitionsForDiskAsync(value);
         OnPropertyChanged(nameof(CanStartBackup));
     }

@@ -115,23 +115,12 @@ public partial class RestoreViewModel : ObservableObject
     {
         if (_diskEnumerator is not null)
         {
-            var disks = await _diskEnumerator.GetDisksAsync();
-            // Append refresh option
-            disks.Add(DiskInfo.RefreshSentinel);
-            AvailableDisks = disks;
+            AvailableDisks = await _diskEnumerator.GetDisksAsync();
         }
     }
 
     partial void OnSelectedTargetDiskChanged(DiskInfo? value)
     {
-        // Handle refresh sentinel selection
-        if (value?.IsRefreshSentinel == true)
-        {
-            SelectedTargetDisk = null;
-            _ = LoadDisksAsync();
-            return;
-        }
-
         _ = LoadTargetPartitionsAsync(value);
         OnPropertyChanged(nameof(CanStartRestore));
     }
