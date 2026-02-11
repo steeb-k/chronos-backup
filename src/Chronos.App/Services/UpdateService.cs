@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Reflection;
@@ -43,7 +44,6 @@ public class UpdateService : IUpdateService
     {
         try
         {
-            // Try to get version from assembly
             var assembly = Assembly.GetEntryAssembly();
             if (assembly != null)
             {
@@ -53,11 +53,9 @@ public class UpdateService : IUpdateService
                     return $"{version.Major}.{version.Minor}.{version.Build}";
                 }
 
-                // Fallback to informational version
                 var infoVersion = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
                 if (!string.IsNullOrEmpty(infoVersion))
                 {
-                    // Remove any +buildinfo suffix
                     var plusIndex = infoVersion.IndexOf('+');
                     return plusIndex > 0 ? infoVersion[..plusIndex] : infoVersion;
                 }
@@ -86,23 +84,28 @@ public class UpdateService : IUpdateService
                 return false;
             }
 
-            // Parse version from tag (remove 'v' prefix if present)
             var tagVersion = release.TagName?.TrimStart('v', 'V') ?? "0.0.0";
             LatestVersion = tagVersion;
             ReleaseNotes = release.Body;
 
-            // Find the appropriate download URL (prefer x64 setup, then portable)
+            // Determine architecture suffix
+            var arch = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture switch
+            {
+                System.Runtime.InteropServices.Architecture.Arm64 => "arm64",
+                _ => "x64"
+            };
+
+            // Find the matching Setup installer asset for this architecture
             DownloadUrl = release.Assets?
-                .FirstOrDefault(a => a.Name?.Contains("x64-Setup", StringComparison.OrdinalIgnoreCase) == true)?.BrowserDownloadUrl
+                .FirstOrDefault(a => a.Name?.Contains($"{arch}-Setup", StringComparison.OrdinalIgnoreCase) == true)?.BrowserDownloadUrl
                 ?? release.Assets?
-                    .FirstOrDefault(a => a.Name?.Contains("x64-Portable", StringComparison.OrdinalIgnoreCase) == true)?.BrowserDownloadUrl
+                    .FirstOrDefault(a => a.Name?.Contains("x64-Setup", StringComparison.OrdinalIgnoreCase) == true)?.BrowserDownloadUrl
                 ?? release.HtmlUrl;
 
-            // Compare versions
             IsUpdateAvailable = CompareVersions(CurrentVersion, LatestVersion) < 0;
 
-            Log.Information("Update check complete. Current: {Current}, Latest: {Latest}, UpdateAvailable: {Available}",
-                CurrentVersion, LatestVersion, IsUpdateAvailable);
+            Log.Information("Update check complete. Current: {Current}, Latest: {Latest}, UpdateAvailable: {Available}, DownloadUrl: {Url}",
+                CurrentVersion, LatestVersion, IsUpdateAvailable, DownloadUrl);
 
             RaiseUpdateCheckCompleted(IsUpdateAvailable, LatestVersion, null);
             return IsUpdateAvailable;
@@ -127,22 +130,98 @@ public class UpdateService : IUpdateService
         }
     }
 
-    public void OpenDownloadPage()
+    public async Task<string?> DownloadInstallerAsync(IProgress<int>? progress = null)
     {
-        var url = DownloadUrl ?? ReleasesPageUrl;
-        Log.Information("Opening download page: {Url}", url);
+        if (string.IsNullOrEmpty(DownloadUrl))
+        {
+            Log.Warning("No download URL available");
+            return null;
+        }
+
+        try
+        {
+            Log.Information("Downloading installer from: {Url}", DownloadUrl);
+
+            // Use a longer timeout for downloads
+            using var downloadClient = new HttpClient();
+            downloadClient.DefaultRequestHeaders.Add("User-Agent", "Chronos-Updater");
+            downloadClient.Timeout = TimeSpan.FromMinutes(10);
+
+            using var response = await downloadClient.GetAsync(DownloadUrl, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+
+            var totalBytes = response.Content.Headers.ContentLength ?? -1;
+            var tempDir = Path.Combine(Path.GetTempPath(), "Chronos-Update");
+            Directory.CreateDirectory(tempDir);
+
+            // Extract filename from URL or use default
+            var fileName = Path.GetFileName(new Uri(DownloadUrl).AbsolutePath);
+            if (string.IsNullOrEmpty(fileName) || !fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                fileName = $"Chronos-{LatestVersion}-Setup.exe";
+
+            var filePath = Path.Combine(tempDir, fileName);
+
+            // Delete old file if it exists
+            if (File.Exists(filePath))
+                File.Delete(filePath);
+
+            await using var contentStream = await response.Content.ReadAsStreamAsync();
+            await using var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 8192, useAsync: true);
+
+            var buffer = new byte[81920];
+            long totalRead = 0;
+            int bytesRead;
+            int lastReportedPercent = -1;
+
+            while ((bytesRead = await contentStream.ReadAsync(buffer)) > 0)
+            {
+                await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead));
+                totalRead += bytesRead;
+
+                if (totalBytes > 0)
+                {
+                    var percent = (int)(totalRead * 100 / totalBytes);
+                    if (percent != lastReportedPercent)
+                    {
+                        lastReportedPercent = percent;
+                        progress?.Report(percent);
+                    }
+                }
+            }
+
+            Log.Information("Installer downloaded to: {Path} ({Bytes} bytes)", filePath, totalRead);
+            return filePath;
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to download installer");
+            return null;
+        }
+    }
+
+    public void LaunchInstallerAndExit(string installerPath)
+    {
+        Log.Information("Launching installer: {Path}", installerPath);
 
         try
         {
             Process.Start(new ProcessStartInfo
             {
-                FileName = url,
+                FileName = installerPath,
+                Arguments = "/CLOSEAPPLICATIONS",
                 UseShellExecute = true
             });
+
+            // Give the installer a moment to start, then exit
+            Log.Information("Installer launched. Exiting application for update.");
+            Log.CloseAndFlush();
+
+            Application.Current.Exit();
         }
         catch (Exception ex)
         {
-            Log.Error(ex, "Failed to open download page");
+            Log.Error(ex, "Failed to launch installer: {Path}", installerPath);
+            throw;
         }
     }
 
@@ -162,7 +241,6 @@ public class UpdateService : IUpdateService
     /// </summary>
     private static int CompareVersions(string v1, string v2)
     {
-        // Handle pre-release versions (e.g., "0.1.0-beta")
         var v1Parts = v1.Split('-')[0].Split('.');
         var v2Parts = v2.Split('-')[0].Split('.');
 
@@ -175,8 +253,6 @@ public class UpdateService : IUpdateService
                 return part1.CompareTo(part2);
         }
 
-        // If base versions are equal, check for pre-release tags
-        // A version without pre-release is considered newer than one with
         var v1HasPrerelease = v1.Contains('-');
         var v2HasPrerelease = v2.Contains('-');
 

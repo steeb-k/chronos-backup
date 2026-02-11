@@ -91,18 +91,122 @@ public partial class App : Application
             await Task.Delay(3000);
 
             var updateService = Services.GetService<IUpdateService>();
-            if (updateService is not null)
+            if (updateService is null)
+                return;
+
+            var updateAvailable = await updateService.CheckForUpdatesAsync();
+            if (!updateAvailable)
+                return;
+
+            Log.Information("Update available: {Version}", updateService.LatestVersion);
+
+            // Show dialog on UI thread
+            MainWindow.DispatcherQueue.TryEnqueue(async () =>
             {
-                var updateAvailable = await updateService.CheckForUpdatesAsync();
-                if (updateAvailable)
+                try
                 {
-                    Log.Information("Update available: {Version}", updateService.LatestVersion);
+                    var dialog = new ContentDialog
+                    {
+                        Title = "Update Available",
+                        Content = $"Chronos {updateService.LatestVersion} is available (you have {updateService.CurrentVersion}).\n\nWould you like to download and install it now?",
+                        PrimaryButtonText = "Download & Install",
+                        CloseButtonText = "Later",
+                        DefaultButton = ContentDialogButton.Primary,
+                        XamlRoot = MainWindow.Content.XamlRoot
+                    };
+
+                    var result = await dialog.ShowAsync();
+                    if (result == ContentDialogResult.Primary)
+                    {
+                        await DownloadAndInstallUpdateAsync(updateService);
+                    }
                 }
-            }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Failed to show startup update dialog");
+                }
+            });
         }
         catch (Exception ex)
         {
             Log.Warning(ex, "Startup update check failed");
+        }
+    }
+
+    private static async Task DownloadAndInstallUpdateAsync(IUpdateService updateService)
+    {
+        ContentDialog? progressDialog = null;
+        try
+        {
+            var progressBar = new Microsoft.UI.Xaml.Controls.ProgressBar
+            {
+                Minimum = 0,
+                Maximum = 100,
+                Value = 0,
+                Width = 300
+            };
+            var statusText = new Microsoft.UI.Xaml.Controls.TextBlock
+            {
+                Text = "Downloading installer...",
+                Margin = new Thickness(0, 8, 0, 0)
+            };
+            var panel = new Microsoft.UI.Xaml.Controls.StackPanel();
+            panel.Children.Add(progressBar);
+            panel.Children.Add(statusText);
+
+            progressDialog = new ContentDialog
+            {
+                Title = "Downloading Update",
+                Content = panel,
+                CloseButtonText = "Cancel",
+                XamlRoot = MainWindow.Content.XamlRoot
+            };
+
+            var cts = new CancellationTokenSource();
+            progressDialog.CloseButtonClick += (_, _) => cts.Cancel();
+
+            // Show dialog and start download concurrently
+            var dialogTask = progressDialog.ShowAsync().AsTask();
+
+            var progress = new Progress<int>(percent =>
+            {
+                MainWindow.DispatcherQueue.TryEnqueue(() =>
+                {
+                    progressBar.Value = percent;
+                    statusText.Text = $"Downloading installer... {percent}%";
+                });
+            });
+
+            var installerPath = await updateService.DownloadInstallerAsync(progress);
+
+            if (cts.Token.IsCancellationRequested)
+                return;
+
+            if (string.IsNullOrEmpty(installerPath))
+            {
+                progressDialog.Hide();
+                var errorDialog = new ContentDialog
+                {
+                    Title = "Download Failed",
+                    Content = "The installer could not be downloaded. Please try again from Options.",
+                    CloseButtonText = "OK",
+                    XamlRoot = MainWindow.Content.XamlRoot
+                };
+                await errorDialog.ShowAsync();
+                return;
+            }
+
+            progressDialog.Hide();
+            updateService.LaunchInstallerAndExit(installerPath);
+        }
+        catch (OperationCanceledException)
+        {
+            Log.Information("Update download cancelled by user");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to download/install update from startup dialog");
+            progressDialog?.Hide();
         }
     }
 

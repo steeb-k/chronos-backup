@@ -85,9 +85,16 @@
                                    Visibility="{x:Bind ViewModel.UpdateStatusMessage, Mode=OneWay, Converter={StaticResource StringToVisibilityConverter}}" />
 
                         <Button Content="Download Update"
-                                Command="{x:Bind ViewModel.OpenDownloadPageCommand}"
+                                Command="{x:Bind ViewModel.DownloadAndInstallUpdateCommand}"
                                 Style="{ThemeResource AccentButtonStyle}"
-                                Visibility="{x:Bind ViewModel.IsUpdateAvailable, Mode=OneWay}" />
+                                Visibility="{x:Bind ViewModel.IsUpdateAvailable, Mode=OneWay}"
+                                IsEnabled="{x:Bind ViewModel.IsDownloadingUpdate, Mode=OneWay, Converter={StaticResource BoolNegationConverter}}" />
+
+                        <StackPanel Spacing="8"
+                                    Visibility="{x:Bind ViewModel.IsDownloadingUpdate, Mode=OneWay}">
+                            <ProgressBar Value="{x:Bind ViewModel.DownloadProgress, Mode=OneWay}"
+                                         Minimum="0" Maximum="100" />
+                        </StackPanel>
                     </StackPanel>
                 </StackPanel>
             </StackPanel>

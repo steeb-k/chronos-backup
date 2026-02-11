@@ -16,7 +16,7 @@ public interface IUpdateService
     string? LatestVersion { get; }
 
     /// <summary>
-    /// Gets or sets the download URL for the latest release.
+    /// Gets or sets the download URL for the latest release installer.
     /// </summary>
     string? DownloadUrl { get; }
 
@@ -37,9 +37,17 @@ public interface IUpdateService
     Task<bool> CheckForUpdatesAsync();
 
     /// <summary>
-    /// Opens the download page for the latest release in the default browser.
+    /// Downloads the installer to a temp path and returns the file path.
     /// </summary>
-    void OpenDownloadPage();
+    /// <param name="progress">Progress callback (0-100).</param>
+    /// <returns>The path to the downloaded installer, or null on failure.</returns>
+    Task<string?> DownloadInstallerAsync(IProgress<int>? progress = null);
+
+    /// <summary>
+    /// Launches the downloaded installer and exits the application.
+    /// </summary>
+    /// <param name="installerPath">Path to the downloaded installer exe.</param>
+    void LaunchInstallerAndExit(string installerPath);
 
     /// <summary>
     /// Event raised when update check status changes.

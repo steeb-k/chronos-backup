@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Chronos.Core.Imaging;
 using Chronos.Core.Models;
@@ -52,6 +53,9 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
             IsBackupInProgress = true;
             ProgressPercentage = 0;
             StatusMessage = "Starting backup...";
+
+            // Prevent system sleep during backup
+            PowerManagement.PreventSleep();
 
             var lastUiUpdate = DateTime.MinValue;
             var progress = new Progress<OperationProgress>(p =>
@@ -137,6 +141,9 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
         }
         finally
         {
+            // Allow system sleep again
+            PowerManagement.AllowSleep();
+
             IsBackupInProgress = false;
 
             // Log to history

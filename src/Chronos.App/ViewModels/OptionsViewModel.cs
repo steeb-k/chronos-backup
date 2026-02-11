@@ -29,6 +29,8 @@ public partial class OptionsViewModel : ObservableObject
     [ObservableProperty] public partial string? LatestVersion { get; set; }
     [ObservableProperty] public partial bool IsUpdateAvailable { get; set; }
     [ObservableProperty] public partial bool IsCheckingForUpdates { get; set; }
+    [ObservableProperty] public partial bool IsDownloadingUpdate { get; set; }
+    [ObservableProperty] public partial int DownloadProgress { get; set; }
     [ObservableProperty] public partial string UpdateStatusMessage { get; set; } = string.Empty;
 
     public OptionsViewModel(ISettingsService? settingsService = null, IUpdateService? updateService = null)
@@ -177,9 +179,46 @@ public partial class OptionsViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void OpenDownloadPage()
+    private async Task DownloadAndInstallUpdateAsync()
     {
-        _updateService?.OpenDownloadPage();
+        if (_updateService is null || IsDownloadingUpdate)
+            return;
+
+        IsDownloadingUpdate = true;
+        DownloadProgress = 0;
+        UpdateStatusMessage = "Downloading installer...";
+
+        try
+        {
+            var progress = new Progress<int>(percent =>
+            {
+                App.MainWindow?.DispatcherQueue.TryEnqueue(() =>
+                {
+                    DownloadProgress = percent;
+                    UpdateStatusMessage = $"Downloading installer... {percent}%";
+                });
+            });
+
+            var installerPath = await _updateService.DownloadInstallerAsync(progress);
+
+            if (string.IsNullOrEmpty(installerPath))
+            {
+                UpdateStatusMessage = "Download failed. Please try again.";
+                return;
+            }
+
+            UpdateStatusMessage = "Download complete. Launching installer...";
+            _updateService.LaunchInstallerAndExit(installerPath);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to download and install update");
+            UpdateStatusMessage = $"Update failed: {ex.Message}";
+        }
+        finally
+        {
+            IsDownloadingUpdate = false;
+        }
     }
 
     private void OnUpdateCheckCompleted(object? sender, UpdateCheckEventArgs e)

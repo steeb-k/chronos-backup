@@ -1,3 +1,4 @@
+using Chronos.App.Services;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Chronos.Core.Imaging;
@@ -291,6 +292,9 @@ public partial class RestoreViewModel : ObservableObject
             EstimatedTimeRemaining = string.Empty;
             StatusMessage = "Starting restore...";
 
+            // Prevent system sleep during restore
+            PowerManagement.PreventSleep();
+
             _cancellationTokenSource = new CancellationTokenSource();
             
             var lastUiUpdate = DateTime.MinValue;
@@ -355,6 +359,9 @@ public partial class RestoreViewModel : ObservableObject
         }
         finally
         {
+            // Allow system sleep again
+            PowerManagement.AllowSleep();
+
             IsRestoreInProgress = false;
             OnPropertyChanged(nameof(CanStartRestore));
             _cancellationTokenSource?.Dispose();
