@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 using Chronos.Native.Win32;
+using Chronos.Native.Structures;
 using Serilog;
 
 namespace Chronos.Core.Disk;
@@ -77,7 +78,10 @@ public class DiskWriter : IDiskWriter
             }
 
             Log.Information("Successfully opened disk for write: {Path}", diskPath);
-            return new DiskWriteHandle(handle, diskPath);
+            var writeHandle = new DiskWriteHandle(handle, diskPath);
+            writeHandle.SectorSize = QuerySectorSize(handle);
+            Log.Debug("Disk write handle: Path={Path}, SectorSize={SectorSize}", diskPath, writeHandle.SectorSize);
+            return writeHandle;
         }, cancellationToken);
     }
 
@@ -96,7 +100,10 @@ public class DiskWriter : IDiskWriter
                 throw new IOException($"Failed to open partition for write: {partPath}. Error: {win32}");
             }
 
-            return new DiskWriteHandle(handle, partPath);
+            var writeHandle = new DiskWriteHandle(handle, partPath);
+            writeHandle.SectorSize = QuerySectorSize(handle);
+            Log.Debug("Partition write handle: Path={Path}, SectorSize={SectorSize}", partPath, writeHandle.SectorSize);
+            return writeHandle;
         }, cancellationToken);
     }
 
@@ -142,5 +149,34 @@ public class DiskWriter : IDiskWriter
             1 => $"Invalid function when trying to {operation}. The disk may not support this operation.",
             _ => $"Failed to {operation}. Windows error code: {errorCode}"
         };
+    }
+
+    private static uint QuerySectorSize(SafeFileHandle handle)
+    {
+        int bufferSize = Marshal.SizeOf<NativeStructures.DISK_GEOMETRY_EX>();
+        IntPtr buffer = Marshal.AllocHGlobal(bufferSize);
+        try
+        {
+            if (DiskApi.DeviceIoControl(
+                handle,
+                DiskApi.IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+                IntPtr.Zero,
+                0,
+                buffer,
+                (uint)bufferSize,
+                out _,
+                IntPtr.Zero))
+            {
+                var geometry = Marshal.PtrToStructure<NativeStructures.DISK_GEOMETRY_EX>(buffer);
+                uint sectorSize = geometry.Geometry.BytesPerSector;
+                if (sectorSize > 0)
+                    return sectorSize;
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+        return 512; // Fallback
     }
 }
