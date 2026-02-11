@@ -69,13 +69,32 @@ public partial class CloneViewModel : ObservableObject
     {
         if (_diskEnumerator is not null)
         {
-            AvailableDisks = await _diskEnumerator.GetDisksAsync();
-            AvailableDestinationDisks = await _diskEnumerator.GetDisksAsync();
+            var disks = await _diskEnumerator.GetDisksAsync();
+            // Append separator and refresh option
+            disks.Add(DiskInfo.SeparatorSentinel);
+            disks.Add(DiskInfo.RefreshSentinel);
+            AvailableDisks = disks;
+
+            var destDisks = await _diskEnumerator.GetDisksAsync();
+            destDisks.Add(DiskInfo.SeparatorSentinel);
+            destDisks.Add(DiskInfo.RefreshSentinel);
+            AvailableDestinationDisks = destDisks;
         }
     }
 
     partial void OnSelectedDiskChanged(DiskInfo? value)
     {
+        // Handle refresh sentinel selection
+        if (value?.IsRefreshSentinel == true || value?.IsSeparatorSentinel == true)
+        {
+            SelectedDisk = null;
+            if (value.IsRefreshSentinel)
+            {
+                _ = LoadDisksAsync();
+            }
+            return;
+        }
+
         _ = LoadPartitionsForDiskAsync(value);
         OnPropertyChanged(nameof(CanStartClone));
     }
@@ -88,6 +107,17 @@ public partial class CloneViewModel : ObservableObject
 
     partial void OnSelectedDestinationDiskChanged(DiskInfo? value)
     {
+        // Handle refresh sentinel selection
+        if (value?.IsRefreshSentinel == true || value?.IsSeparatorSentinel == true)
+        {
+            SelectedDestinationDisk = null;
+            if (value.IsRefreshSentinel)
+            {
+                _ = LoadDisksAsync();
+            }
+            return;
+        }
+
         _ = LoadDestinationPartitionsAsync(value);
         OnPropertyChanged(nameof(CanStartClone));
     }

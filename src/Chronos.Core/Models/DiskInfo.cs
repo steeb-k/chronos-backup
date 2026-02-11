@@ -11,6 +11,20 @@ public enum DiskPartitionStyle
 
 public class DiskInfo
 {
+    /// <summary>Sentinel value for the "Refresh attached disks" dropdown item.</summary>
+    public static readonly DiskInfo RefreshSentinel = new()
+    {
+        DiskNumber = uint.MaxValue,
+        Model = "Refresh attached disks"
+    };
+
+    /// <summary>Sentinel value for the separator line before the refresh item.</summary>
+    public static readonly DiskInfo SeparatorSentinel = new()
+    {
+        DiskNumber = uint.MaxValue - 1,
+        Model = "────────────────────"
+    };
+
     public uint DiskNumber { get; set; }
     public string Manufacturer { get; set; } = string.Empty;
     public string Model { get; set; } = string.Empty;
@@ -20,7 +34,15 @@ public class DiskInfo
     public bool IsSystemDisk { get; set; }
     public bool IsBootDisk { get; set; }
 
+    /// <summary>True if this is the RefreshSentinel.</summary>
+    public bool IsRefreshSentinel => DiskNumber == uint.MaxValue;
+
+    /// <summary>True if this is the SeparatorSentinel.</summary>
+    public bool IsSeparatorSentinel => DiskNumber == uint.MaxValue - 1;
+
     public override string ToString() =>
+        IsRefreshSentinel ? "⟳ Refresh attached disks" :
+        IsSeparatorSentinel ? Model :
         $"{Manufacturer} {Model} ({((long)Size).ToHumanReadableSize()})";
 }
 

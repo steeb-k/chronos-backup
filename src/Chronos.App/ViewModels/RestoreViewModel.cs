@@ -114,11 +114,28 @@ public partial class RestoreViewModel : ObservableObject
     private async Task LoadDisksAsync()
     {
         if (_diskEnumerator is not null)
-            AvailableDisks = await _diskEnumerator.GetDisksAsync();
+        {
+            var disks = await _diskEnumerator.GetDisksAsync();
+            // Append separator and refresh option
+            disks.Add(DiskInfo.SeparatorSentinel);
+            disks.Add(DiskInfo.RefreshSentinel);
+            AvailableDisks = disks;
+        }
     }
 
     partial void OnSelectedTargetDiskChanged(DiskInfo? value)
     {
+        // Handle refresh sentinel selection
+        if (value?.IsRefreshSentinel == true || value?.IsSeparatorSentinel == true)
+        {
+            SelectedTargetDisk = null;
+            if (value.IsRefreshSentinel)
+            {
+                _ = LoadDisksAsync();
+            }
+            return;
+        }
+
         _ = LoadTargetPartitionsAsync(value);
         OnPropertyChanged(nameof(CanStartRestore));
     }
