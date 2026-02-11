@@ -46,8 +46,11 @@ Download the latest self-contained build from [Releases](https://github.com/stee
 git clone https://github.com/steeb-k/chronos-backup.git
 cd chronos-backup
 
-dotnet build src/Chronos.App.csproj
-dotnet run --project src/Chronos.App.csproj
+# Build for your platform (x86, x64, or ARM64)
+dotnet build Chronos.sln -p:Platform=x64
+
+# Or run directly
+dotnet run --project src/Chronos.App.csproj -p:Platform=x64
 ```
 
 ## Usage
@@ -127,7 +130,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 1. Install Visual Studio 2022 with the **.NET desktop development** and **Windows application development** workloads
 2. Clone the repository
-3. Open `Chronos.slnx`
+3. Open `Chronos.sln`
 4. Build and run
 
 ## License
