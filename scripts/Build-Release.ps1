@@ -69,13 +69,34 @@ if (-not $SkipBuild) {
     function Fix-SelfContainedAssemblies {
         param([string]$PublishDir, [string]$Arch)
         
-        # Find .NET 10 runtime directory
-        $runtimeBase = "C:\Program Files\dotnet\shared\Microsoft.NETCore.App"
-        $runtimeDir = Get-ChildItem $runtimeBase -Directory -Filter "10.*" | 
-            Sort-Object { [version]$_.Name } -Descending | 
-            Select-Object -First 1
-        
-        if ($runtimeDir) {
+        # Find .NET 10 runtime directory for the target architecture
+        # Use NuGet package cache which has arch-specific runtime packs (works for cross-compilation)
+        $rid = "win-$($Arch.ToLower())"
+        $nugetPkgDir = Join-Path $env:USERPROFILE ".nuget\packages\microsoft.netcore.app.runtime.$rid"
+        $runtimeDir = $null
+
+        if (Test-Path $nugetPkgDir) {
+            $runtimeVersion = Get-ChildItem $nugetPkgDir -Directory -Filter "10.*" |
+                Sort-Object { [version]$_.Name } -Descending |
+                Select-Object -First 1
+            if ($runtimeVersion) {
+                $runtimeDir = Join-Path $runtimeVersion.FullName "runtimes\$rid\lib\net10.0"
+            }
+        }
+
+        # Fallback to shared framework (only correct when host arch == target arch)
+        if (-not $runtimeDir -or -not (Test-Path $runtimeDir)) {
+            $sharedBase = "C:\Program Files\dotnet\shared\Microsoft.NETCore.App"
+            $sharedDir = Get-ChildItem $sharedBase -Directory -Filter "10.*" |
+                Sort-Object { [version]$_.Name } -Descending |
+                Select-Object -First 1
+            if ($sharedDir) {
+                $runtimeDir = $sharedDir.FullName
+                Write-Host "    WARNING: Using shared framework (host arch) for $Arch - verify this matches target" -ForegroundColor DarkYellow
+            }
+        }
+
+        if ($runtimeDir -and (Test-Path $runtimeDir)) {
             # Assemblies that need to be replaced (facade/trimmed -> full implementation)
             $assembliesToFix = @(
                 "System.Runtime.InteropServices.dll",  # Required for CsWinRT AOT vtable generation
@@ -83,7 +104,7 @@ if (-not $SkipBuild) {
             )
             
             foreach ($asmName in $assembliesToFix) {
-                $sourceAsm = Join-Path $runtimeDir.FullName $asmName
+                $sourceAsm = Join-Path $runtimeDir $asmName
                 $destAsm = Join-Path $PublishDir $asmName
                 
                 if ((Test-Path $sourceAsm) -and (Test-Path $destAsm)) {

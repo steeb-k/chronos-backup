@@ -107,22 +107,34 @@
     <!-- Note: Build-Release.ps1 handles this for production builds; this target handles ad-hoc publishes -->
     <Target Name="FixSelfContainedAssemblies" AfterTargets="Publish" Condition="'$(SelfContained)' == 'true'">
         <PropertyGroup>
-            <_NetRuntimeDir>C:\Program Files\dotnet\shared\Microsoft.NETCore.App\10.0.2\</_NetRuntimeDir>
+            <!-- Use NuGet runtime pack for the target RID so cross-compiled ARM64 builds get ARM64 DLLs -->
+            <_NetRuntimeNuGetDir>$(NuGetPackageRoot)microsoft.netcore.app.runtime.$(RuntimeIdentifier)\</_NetRuntimeNuGetDir>
+        </PropertyGroup>
+        <!-- Resolve the actual runtime pack version directory from NuGet cache -->
+        <ItemGroup>
+            <_RuntimePackVersionDirs Include="$(_NetRuntimeNuGetDir)10.*" />
+            <!-- Fallback: resolve shared framework version dynamically -->
+            <_SharedFrameworkDirs Include="$([System.IO.Directory]::GetDirectories('C:\Program Files\dotnet\shared\Microsoft.NETCore.App', '10.*'))" />
+        </ItemGroup>
+        <PropertyGroup>
+            <_RuntimePackLibDir>%(_RuntimePackVersionDirs.Identity)\runtimes\$(RuntimeIdentifier)\lib\net10.0\</_RuntimePackLibDir>
+            <!-- Fallback to shared framework for same-arch builds (picks latest 10.x installed) -->
+            <_RuntimePackLibDir Condition="!Exists('$(_RuntimePackLibDir)') And '@(_SharedFrameworkDirs)' != ''">%(_SharedFrameworkDirs.Identity)\</_RuntimePackLibDir>
         </PropertyGroup>
         <!-- System.Runtime.InteropServices.dll - Required for CsWinRT AOT vtable generation -->
-        <Copy SourceFiles="$(_NetRuntimeDir)System.Runtime.InteropServices.dll" 
+        <Copy SourceFiles="$(_RuntimePackLibDir)System.Runtime.InteropServices.dll" 
               DestinationFolder="$(PublishDir)"
               SkipUnchangedFiles="false"
               OverwriteReadOnlyFiles="true"
               ContinueOnError="WarnAndContinue"
-              Condition="Exists('$(_NetRuntimeDir)System.Runtime.InteropServices.dll')" />
+              Condition="Exists('$(_RuntimePackLibDir)System.Runtime.InteropServices.dll')" />
         <!-- System.Private.CoreLib.dll - Required for System.Environment.SetEnvironmentVariable -->
-        <Copy SourceFiles="$(_NetRuntimeDir)System.Private.CoreLib.dll" 
+        <Copy SourceFiles="$(_RuntimePackLibDir)System.Private.CoreLib.dll" 
               DestinationFolder="$(PublishDir)"
               SkipUnchangedFiles="false"
               OverwriteReadOnlyFiles="true"
               ContinueOnError="WarnAndContinue"
-              Condition="Exists('$(_NetRuntimeDir)System.Private.CoreLib.dll')" />
+              Condition="Exists('$(_RuntimePackLibDir)System.Private.CoreLib.dll')" />
         <Message Importance="High" Text="Note: If assembly copy failed due to file locks, use Build-Release.ps1 for production builds" />
     </Target>
 </Project>
