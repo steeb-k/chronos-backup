@@ -70,13 +70,11 @@ public partial class CloneViewModel : ObservableObject
         if (_diskEnumerator is not null)
         {
             var disks = await _diskEnumerator.GetDisksAsync();
-            // Append separator and refresh option
-            disks.Add(DiskInfo.SeparatorSentinel);
+            // Append refresh option
             disks.Add(DiskInfo.RefreshSentinel);
             AvailableDisks = disks;
 
             var destDisks = await _diskEnumerator.GetDisksAsync();
-            destDisks.Add(DiskInfo.SeparatorSentinel);
             destDisks.Add(DiskInfo.RefreshSentinel);
             AvailableDestinationDisks = destDisks;
         }
@@ -85,13 +83,10 @@ public partial class CloneViewModel : ObservableObject
     partial void OnSelectedDiskChanged(DiskInfo? value)
     {
         // Handle refresh sentinel selection
-        if (value?.IsRefreshSentinel == true || value?.IsSeparatorSentinel == true)
+        if (value?.IsRefreshSentinel == true)
         {
             SelectedDisk = null;
-            if (value.IsRefreshSentinel)
-            {
-                _ = LoadDisksAsync();
-            }
+            _ = LoadDisksAsync();
             return;
         }
 
@@ -108,13 +103,10 @@ public partial class CloneViewModel : ObservableObject
     partial void OnSelectedDestinationDiskChanged(DiskInfo? value)
     {
         // Handle refresh sentinel selection
-        if (value?.IsRefreshSentinel == true || value?.IsSeparatorSentinel == true)
+        if (value?.IsRefreshSentinel == true)
         {
             SelectedDestinationDisk = null;
-            if (value.IsRefreshSentinel)
-            {
-                _ = LoadDisksAsync();
-            }
+            _ = LoadDisksAsync();
             return;
         }
 
