@@ -20,7 +20,7 @@
 #>
 
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.1.2",
 
     [switch]$SkipBuild,
     [switch]$SkipInstaller

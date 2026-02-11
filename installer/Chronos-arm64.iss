@@ -2,7 +2,7 @@
 ; ARM64 version
 
 #define MyAppName "Chronos"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.1.2"
 #define MyAppPublisher "Chronos Project"
 #define MyAppURL "https://github.com/steeb-k/chronos-backup"
 #define MyAppExeName "Chronos.App.exe"
