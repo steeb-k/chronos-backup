@@ -78,9 +78,10 @@ public interface IVirtualDiskService
     /// </summary>
     /// <param name="path">The path where the VHDX will be created.</param>
     /// <param name="maxSizeBytes">The maximum size in bytes.</param>
+    /// <param name="sectorSizeInBytes">The logical sector size (512 or 4096). Must match source disk for GPT compatibility.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>An attached VHDX handle. Dispose to detach.</returns>
-    Task<IAttachedVhdx> CreateAndAttachVhdxForWriteAsync(string path, long maxSizeBytes, CancellationToken cancellationToken = default);
+    Task<IAttachedVhdx> CreateAndAttachVhdxForWriteAsync(string path, long maxSizeBytes, uint sectorSizeInBytes = 512, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Attaches an existing VHDX for read-only access and returns the physical disk path for sector reads.

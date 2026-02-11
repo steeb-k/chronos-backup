@@ -289,9 +289,9 @@ public class BackupEngine : IBackupEngine
         if (sourceSize > 0 && sourceSize < long.MaxValue)
             vhdxSize = sourceSize;
 
-        Log.Information("Creating and attaching VHDX: Path={Path}, Size={Size}", job.DestinationPath, vhdxSize);
+        Log.Information("Creating and attaching VHDX: Path={Path}, Size={Size}, SectorSize={SectorSize}", job.DestinationPath, vhdxSize, sourceHandle.SectorSize);
         progressReporter?.Report(new OperationProgress { StatusMessage = "Creating and attaching VHDX..." });
-        using (var attached = await _virtualDiskService.CreateAndAttachVhdxForWriteAsync(job.DestinationPath, (long)vhdxSize, ct).ConfigureAwait(false))
+        using (var attached = await _virtualDiskService.CreateAndAttachVhdxForWriteAsync(job.DestinationPath, (long)vhdxSize, sourceHandle.SectorSize, ct).ConfigureAwait(false))
         {
             Log.Information("VHDX attached. PhysicalPath={PhysicalPath}", attached.PhysicalPath);
             DiskWriteHandle? destHandle = null;

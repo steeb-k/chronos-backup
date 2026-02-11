@@ -446,11 +446,11 @@ public class VirtualDiskService : IVirtualDiskService
         }, cancellationToken);
     }
 
-    public async Task<IAttachedVhdx> CreateAndAttachVhdxForWriteAsync(string path, long maxSizeBytes, CancellationToken cancellationToken = default)
+    public async Task<IAttachedVhdx> CreateAndAttachVhdxForWriteAsync(string path, long maxSizeBytes, uint sectorSizeInBytes = 512, CancellationToken cancellationToken = default)
     {
         return await Task.Run(() =>
         {
-            Log.Debug("CreateAndAttachVhdxForWrite: path={Path}, maxSizeBytes={Size}", path, maxSizeBytes);
+            Log.Debug("CreateAndAttachVhdxForWrite: path={Path}, maxSizeBytes={Size}, sectorSize={SectorSize}", path, maxSizeBytes, sectorSizeInBytes);
             var storageType = new VirtualDiskInterop.VirtualStorageTypeStruct
             {
                 DeviceId = VirtualDiskInterop.VirtualStorageType.VHDX,
@@ -463,8 +463,8 @@ public class VirtualDiskService : IVirtualDiskService
                 UniqueId = Guid.NewGuid(),
                 MaximumSize = (ulong)maxSizeBytes,
                 BlockSizeInBytes = 32 * 1024 * 1024,
-                SectorSizeInBytes = 512,
-                PhysicalSectorSizeInBytes = 512,
+                SectorSizeInBytes = sectorSizeInBytes,
+                PhysicalSectorSizeInBytes = sectorSizeInBytes,
                 ParentPath = IntPtr.Zero,
                 SourcePath = IntPtr.Zero
             };
