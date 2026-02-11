@@ -6,7 +6,7 @@
     Builds x64 and ARM64 versions, creates installers and ZIP files.
 
 .PARAMETER Version
-    Version number (e.g., "1.0.0"). Updates installer scripts automatically.
+    Version number (e.g., "1.0.0"). If not specified, reads from version.json.
 
 .PARAMETER SkipBuild
     Skip the dotnet publish step (use existing binaries).
@@ -15,12 +15,12 @@
     Skip installer generation (only create ZIPs).
 
 .EXAMPLE
+    .\Build-Release.ps1
     .\Build-Release.ps1 -Version "1.0.0"
 #>
 
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$Version,
+    [string]$Version = "0.1.1",
 
     [switch]$SkipBuild,
     [switch]$SkipInstaller
@@ -30,6 +30,13 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $DistDir = Join-Path $RepoRoot "dist"
 $InstallerDir = Join-Path $RepoRoot "installer"
+
+# Read version from version.json if using default
+$versionFile = Join-Path $RepoRoot "version.json"
+if ((Test-Path $versionFile) -and ($Version -eq "0.1.1")) {
+    $versionData = Get-Content $versionFile | ConvertFrom-Json
+    $Version = $versionData.version
+}
 
 Write-Host "======================================" -ForegroundColor Cyan
 Write-Host "  Chronos Release Build v$Version" -ForegroundColor Cyan
@@ -57,12 +64,52 @@ foreach ($iss in $issFiles) {
 Write-Host "  Done." -ForegroundColor Green
 
 if (-not $SkipBuild) {
+    # Function to fix self-contained deployment (replace facade/trimmed assemblies with full implementations)
+    # This is required because WindowsAppSDK requires certain APIs that are trimmed from self-contained builds
+    function Fix-SelfContainedAssemblies {
+        param([string]$PublishDir, [string]$Arch)
+        
+        # Find .NET 10 runtime directory
+        $runtimeBase = "C:\Program Files\dotnet\shared\Microsoft.NETCore.App"
+        $runtimeDir = Get-ChildItem $runtimeBase -Directory -Filter "10.*" | 
+            Sort-Object { [version]$_.Name } -Descending | 
+            Select-Object -First 1
+        
+        if ($runtimeDir) {
+            # Assemblies that need to be replaced (facade/trimmed -> full implementation)
+            $assembliesToFix = @(
+                "System.Runtime.InteropServices.dll",  # Required for CsWinRT AOT vtable generation
+                "System.Private.CoreLib.dll"           # Required for System.Environment.SetEnvironmentVariable
+            )
+            
+            foreach ($asmName in $assembliesToFix) {
+                $sourceAsm = Join-Path $runtimeDir.FullName $asmName
+                $destAsm = Join-Path $PublishDir $asmName
+                
+                if ((Test-Path $sourceAsm) -and (Test-Path $destAsm)) {
+                    # Only replace if sizes differ (facade is smaller)
+                    $sourceSize = (Get-Item $sourceAsm).Length
+                    $destSize = (Get-Item $destAsm).Length
+                    if ($sourceSize -gt $destSize) {
+                        Copy-Item $sourceAsm $destAsm -Force
+                        Write-Host "    Fixed $asmName ($destSize -> $sourceSize bytes)" -ForegroundColor DarkGray
+                    }
+                }
+            }
+            Write-Host "  Fixed self-contained assemblies for $Arch" -ForegroundColor DarkGray
+        }
+    }
+
     # Build x64
     Write-Host "[2/5] Building x64 Release..." -ForegroundColor Yellow
     Push-Location $RepoRoot
     dotnet publish src/Chronos.App.csproj -c Release -r win-x64 --self-contained -p:Platform=x64
     if ($LASTEXITCODE -ne 0) { throw "x64 build failed" }
     Pop-Location
+    
+    # Fix self-contained deployment issues for x64
+    $x64Publish = Join-Path $RepoRoot "src\bin\Release\net10.0-windows10.0.19041.0\win-x64\publish"
+    Fix-SelfContainedAssemblies -PublishDir $x64Publish -Arch "x64"
     Write-Host "  Done." -ForegroundColor Green
 
     # Build ARM64
@@ -71,6 +118,10 @@ if (-not $SkipBuild) {
     dotnet publish src/Chronos.App.csproj -c Release -r win-arm64 --self-contained -p:Platform=ARM64
     if ($LASTEXITCODE -ne 0) { throw "ARM64 build failed" }
     Pop-Location
+    
+    # Fix self-contained deployment issues for ARM64
+    $arm64Publish = Join-Path $RepoRoot "src\bin\Release\net10.0-windows10.0.19041.0\win-arm64\publish"
+    Fix-SelfContainedAssemblies -PublishDir $arm64Publish -Arch "ARM64"
     Write-Host "  Done." -ForegroundColor Green
 } else {
     Write-Host "[2/5] Skipping x64 build (--SkipBuild)" -ForegroundColor DarkGray
@@ -86,17 +137,49 @@ $arm64PublishDir = Join-Path $RepoRoot "src\bin\Release\net10.0-windows10.0.1904
 $x64Zip = Join-Path $DistDir "Chronos-$Version-x64-Portable.zip"
 $arm64Zip = Join-Path $DistDir "Chronos-$Version-arm64-Portable.zip"
 
+# Helper function to create ZIP excluding .facade files (which may be locked)
+function Create-PortableZip {
+    param([string]$SourceDir, [string]$DestZip)
+    
+    # Get all items except .facade files
+    $items = Get-ChildItem -Path $SourceDir -Recurse | Where-Object { $_.Extension -ne '.facade' }
+    
+    # Create temp directory structure without .facade files
+    $tempDir = Join-Path $env:TEMP "chronos-zip-$(Get-Random)"
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    
+    # Copy non-facade files preserving structure
+    foreach ($item in $items) {
+        $relativePath = $item.FullName.Substring($SourceDir.Length + 1)
+        $destPath = Join-Path $tempDir $relativePath
+        if ($item.PSIsContainer) {
+            New-Item -ItemType Directory -Path $destPath -Force -ErrorAction SilentlyContinue | Out-Null
+        } else {
+            $destDir = Split-Path $destPath -Parent
+            if (-not (Test-Path $destDir)) {
+                New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+            }
+            Copy-Item $item.FullName $destPath -Force
+        }
+    }
+    
+    # Create ZIP from temp directory
+    if (Test-Path $DestZip) { Remove-Item $DestZip -Force }
+    Compress-Archive -Path "$tempDir\*" -DestinationPath $DestZip -CompressionLevel Optimal
+    
+    # Cleanup temp
+    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 if (Test-Path $x64PublishDir) {
-    if (Test-Path $x64Zip) { Remove-Item $x64Zip }
-    Compress-Archive -Path "$x64PublishDir\*" -DestinationPath $x64Zip -CompressionLevel Optimal
+    Create-PortableZip -SourceDir $x64PublishDir -DestZip $x64Zip
     Write-Host "  Created: $x64Zip" -ForegroundColor Green
 } else {
     Write-Host "  Warning: x64 publish directory not found" -ForegroundColor Yellow
 }
 
 if (Test-Path $arm64PublishDir) {
-    if (Test-Path $arm64Zip) { Remove-Item $arm64Zip }
-    Compress-Archive -Path "$arm64PublishDir\*" -DestinationPath $arm64Zip -CompressionLevel Optimal
+    Create-PortableZip -SourceDir $arm64PublishDir -DestZip $arm64Zip
     Write-Host "  Created: $arm64Zip" -ForegroundColor Green
 } else {
     Write-Host "  Warning: ARM64 publish directory not found" -ForegroundColor Yellow

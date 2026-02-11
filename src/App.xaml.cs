@@ -78,6 +78,32 @@ public partial class App : Application
 
         // Apply saved theme to the root element
         ApplyStartupTheme();
+
+        // Check for updates in the background after a short delay
+        _ = CheckForUpdatesOnStartupAsync();
+    }
+
+    private static async Task CheckForUpdatesOnStartupAsync()
+    {
+        try
+        {
+            // Wait a bit so the UI loads first
+            await Task.Delay(3000);
+
+            var updateService = Services.GetService<IUpdateService>();
+            if (updateService is not null)
+            {
+                var updateAvailable = await updateService.CheckForUpdatesAsync();
+                if (updateAvailable)
+                {
+                    Log.Information("Update available: {Version}", updateService.LatestVersion);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Startup update check failed");
+        }
     }
 
     private static void ApplyStartupTheme()
@@ -137,6 +163,7 @@ public partial class App : Application
         services.AddSingleton<IBackupOperationsService, BackupOperationsService>();
         services.AddSingleton<ISettingsService, SettingsService>();
         services.AddSingleton<IOperationHistoryService, OperationHistoryService>();
+        services.AddSingleton<IUpdateService, UpdateService>();
 
         // ViewModels
         services.AddTransient<MainViewModel>();

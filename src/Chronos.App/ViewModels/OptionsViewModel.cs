@@ -11,6 +11,7 @@ namespace Chronos.App.ViewModels;
 public partial class OptionsViewModel : ObservableObject
 {
     private readonly ISettingsService? _settingsService;
+    private readonly IUpdateService? _updateService;
     private bool _isLoading;
 
     [ObservableProperty] public partial int DefaultCompressionLevel { get; set; } = 3;
@@ -23,9 +24,25 @@ public partial class OptionsViewModel : ObservableObject
     /// <summary>0 = System, 1 = Light, 2 = Dark</summary>
     [ObservableProperty] public partial int ThemeMode { get; set; } = 0;
 
-    public OptionsViewModel(ISettingsService? settingsService = null)
+    // Update-related properties
+    [ObservableProperty] public partial string CurrentVersion { get; set; } = "0.0.0";
+    [ObservableProperty] public partial string? LatestVersion { get; set; }
+    [ObservableProperty] public partial bool IsUpdateAvailable { get; set; }
+    [ObservableProperty] public partial bool IsCheckingForUpdates { get; set; }
+    [ObservableProperty] public partial string UpdateStatusMessage { get; set; } = string.Empty;
+
+    public OptionsViewModel(ISettingsService? settingsService = null, IUpdateService? updateService = null)
     {
         _settingsService = settingsService;
+        _updateService = updateService;
+        
+        // Initialize version info
+        if (_updateService != null)
+        {
+            CurrentVersion = _updateService.CurrentVersion;
+            _updateService.UpdateCheckCompleted += OnUpdateCheckCompleted;
+        }
+        
         LoadTargetDrives();
         LoadSettings();
     }
@@ -138,6 +155,56 @@ public partial class OptionsViewModel : ObservableObject
         {
             Log.Warning(ex, "Failed to apply theme");
         }
+    }
+
+    [RelayCommand]
+    private async Task CheckForUpdatesAsync()
+    {
+        if (_updateService is null || IsCheckingForUpdates)
+            return;
+
+        IsCheckingForUpdates = true;
+        UpdateStatusMessage = "Checking for updates...";
+
+        try
+        {
+            await _updateService.CheckForUpdatesAsync();
+        }
+        finally
+        {
+            IsCheckingForUpdates = false;
+        }
+    }
+
+    [RelayCommand]
+    private void OpenDownloadPage()
+    {
+        _updateService?.OpenDownloadPage();
+    }
+
+    private void OnUpdateCheckCompleted(object? sender, UpdateCheckEventArgs e)
+    {
+        // Update on UI thread
+        App.MainWindow?.DispatcherQueue.TryEnqueue(() =>
+        {
+            if (e.IsError)
+            {
+                UpdateStatusMessage = e.ErrorMessage ?? "Error checking for updates";
+                IsUpdateAvailable = false;
+            }
+            else if (e.UpdateAvailable)
+            {
+                LatestVersion = e.LatestVersion;
+                IsUpdateAvailable = true;
+                UpdateStatusMessage = $"Version {e.LatestVersion} is available!";
+            }
+            else
+            {
+                LatestVersion = e.LatestVersion;
+                IsUpdateAvailable = false;
+                UpdateStatusMessage = "You're running the latest version.";
+            }
+        });
     }
 }
 

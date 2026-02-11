@@ -2,7 +2,7 @@
 ; ARM64 version
 
 #define MyAppName "Chronos"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "0.1.1"
 #define MyAppPublisher "Chronos Project"
 #define MyAppURL "https://github.com/steeb-k/chronos-backup"
 #define MyAppExeName "Chronos.App.exe"
@@ -24,7 +24,7 @@ OutputBaseFilename=Chronos-{#MyAppVersion}-arm64-Setup
 SetupIconFile=..\appIconWin.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
-WizardStyle=modern
+WizardStyle=modern dynamic
 ArchitecturesAllowed=arm64
 ArchitecturesInstallIn64BitMode=arm64
 PrivilegesRequired=admin
@@ -46,4 +46,4 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent shellexec

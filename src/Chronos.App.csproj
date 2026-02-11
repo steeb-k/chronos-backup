@@ -1,14 +1,25 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <Project Sdk="Microsoft.NET.Sdk">
+    <!-- Import centralized version -->
+    <Import Project="..\Version.props" />
+    
     <PropertyGroup>
         <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
         <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
         <OutputType>WinExe</OutputType>
 
+        <!-- Version (synced from version.json via sync-version.ps1) -->
+        <Version>0.1.1</Version>
+        <AssemblyVersion>0.1.1.0</AssemblyVersion>
+        <FileVersion>0.1.1.0</FileVersion>
+
         <!-- WinUI 3 -->
         <UseWinUI>true</UseWinUI>
         <EnableMsixTooling>true</EnableMsixTooling>
         <WindowsPackageType>None</WindowsPackageType>
+        
+        <!-- Ensure WindowsAppSDK binaries are correctly included in self-contained deployment -->
+        <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
 
         <!-- Project Options -->
         <Nullable>enable</Nullable>
@@ -49,8 +60,8 @@
     </ItemGroup>
 
     <ItemGroup>
-        <Content Include="..\logoDark.png" Link="Assets\logoDark.png" />
-        <Content Include="..\logoLight.png" Link="Assets\logoLight.png" />
+        <Content Include="..\logoDark.png" Link="Assets\logoDark.png" CopyToOutputDirectory="PreserveNewest" />
+        <Content Include="..\logoLight.png" Link="Assets\logoLight.png" CopyToOutputDirectory="PreserveNewest" />
         <Content Include="Assets\SplashScreen.scale-200.png" />
         <Content Include="Assets\LockScreenLogo.scale-200.png" />
         <Content Include="Assets\Square150x150Logo.scale-200.png" />
@@ -65,7 +76,8 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.*" />
+        <!-- Pin to WindowsAppSDK 1.6 for .NET 10 compatibility with self-contained deployment -->
+        <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.*" />
         <PackageReference Include="Microsoft.Web.WebView2" Version="1.*" />
         <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.*" />
         <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
@@ -89,4 +101,28 @@
     <PropertyGroup Condition="'$(DisableHasPackageAndPublishMenuAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">
         <HasPackageAndPublishMenu>true</HasPackageAndPublishMenu>
     </PropertyGroup>
+
+    <!-- Fix: Replace facade/trimmed assemblies with full implementations for self-contained deployment -->
+    <!-- This is needed because WindowsAppSDK requires certain APIs that are trimmed from self-contained builds -->
+    <!-- Note: Build-Release.ps1 handles this for production builds; this target handles ad-hoc publishes -->
+    <Target Name="FixSelfContainedAssemblies" AfterTargets="Publish" Condition="'$(SelfContained)' == 'true'">
+        <PropertyGroup>
+            <_NetRuntimeDir>C:\Program Files\dotnet\shared\Microsoft.NETCore.App\10.0.2\</_NetRuntimeDir>
+        </PropertyGroup>
+        <!-- System.Runtime.InteropServices.dll - Required for CsWinRT AOT vtable generation -->
+        <Copy SourceFiles="$(_NetRuntimeDir)System.Runtime.InteropServices.dll" 
+              DestinationFolder="$(PublishDir)"
+              SkipUnchangedFiles="false"
+              OverwriteReadOnlyFiles="true"
+              ContinueOnError="WarnAndContinue"
+              Condition="Exists('$(_NetRuntimeDir)System.Runtime.InteropServices.dll')" />
+        <!-- System.Private.CoreLib.dll - Required for System.Environment.SetEnvironmentVariable -->
+        <Copy SourceFiles="$(_NetRuntimeDir)System.Private.CoreLib.dll" 
+              DestinationFolder="$(PublishDir)"
+              SkipUnchangedFiles="false"
+              OverwriteReadOnlyFiles="true"
+              ContinueOnError="WarnAndContinue"
+              Condition="Exists('$(_NetRuntimeDir)System.Private.CoreLib.dll')" />
+        <Message Importance="High" Text="Note: If assembly copy failed due to file locks, use Build-Release.ps1 for production builds" />
+    </Target>
 </Project>

@@ -5,7 +5,14 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:converters="using:Chronos.App.Converters"
     mc:Ignorable="d">
+
+    <Page.Resources>
+        <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+        <converters:BoolNegationConverter x:Key="BoolNegationConverter" />
+        <converters:StringToVisibilityConverter x:Key="StringToVisibilityConverter" />
+    </Page.Resources>
 
     <ScrollViewer Padding="24,20,24,20"
                    HorizontalScrollBarVisibility="Disabled"
@@ -17,6 +24,72 @@
                 <TextBlock Text="Options" Style="{StaticResource TitleTextBlockStyle}" />
                 <TextBlock Text="Configure application settings and preferences."
                            Style="{StaticResource BodyTextBlockStyle}" Opacity="0.7" />
+            </StackPanel>
+
+            <!-- About -->
+            <StackPanel Spacing="12">
+                <TextBlock Text="ABOUT" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
+                           CharacterSpacing="80" />
+
+                <StackPanel Spacing="16"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="20">
+
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <FontIcon Glyph="&#xE7F1;" FontSize="32" />
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="Chronos" FontWeight="Bold" FontSize="18" />
+                            <TextBlock Text="Modern Disk Imaging Utility" Opacity="0.6" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <MenuFlyoutSeparator Margin="0,4" />
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="120" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition />
+                            <RowDefinition />
+                            <RowDefinition />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Text="Version" Opacity="0.6" Grid.Row="0" />
+                        <TextBlock Text="{x:Bind ViewModel.CurrentVersion, Mode=OneWay}" Grid.Row="0" Grid.Column="1" />
+
+                        <TextBlock Text="License" Opacity="0.6" Grid.Row="1" />
+                        <TextBlock Text="GPLv3" Grid.Row="1" Grid.Column="1" />
+
+                        <TextBlock Text="Runtime" Opacity="0.6" Grid.Row="2" />
+                        <TextBlock Text=".NET 10 + WinUI 3" Grid.Row="2" Grid.Column="1" />
+                    </Grid>
+
+                    <MenuFlyoutSeparator Margin="0,4" />
+
+                    <!-- Update Section -->
+                    <StackPanel Spacing="12">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <Button Content="Check for Updates"
+                                    Command="{x:Bind ViewModel.CheckForUpdatesCommand}"
+                                    IsEnabled="{x:Bind ViewModel.IsCheckingForUpdates, Mode=OneWay, Converter={StaticResource BoolNegationConverter}}" />
+                            <ProgressRing IsActive="{x:Bind ViewModel.IsCheckingForUpdates, Mode=OneWay}"
+                                          Width="20" Height="20" 
+                                          Visibility="{x:Bind ViewModel.IsCheckingForUpdates, Mode=OneWay}" />
+                        </StackPanel>
+
+                        <TextBlock Text="{x:Bind ViewModel.UpdateStatusMessage, Mode=OneWay}"
+                                   Opacity="0.8"
+                                   Visibility="{x:Bind ViewModel.UpdateStatusMessage, Mode=OneWay, Converter={StaticResource StringToVisibilityConverter}}" />
+
+                        <Button Content="Download Update"
+                                Command="{x:Bind ViewModel.OpenDownloadPageCommand}"
+                                Style="{ThemeResource AccentButtonStyle}"
+                                Visibility="{x:Bind ViewModel.IsUpdateAvailable, Mode=OneWay}" />
+                    </StackPanel>
+                </StackPanel>
             </StackPanel>
 
             <!-- Backup Defaults -->
@@ -74,49 +147,6 @@
                         <RadioButton Content="Light" />
                         <RadioButton Content="Dark" />
                     </RadioButtons>
-                </StackPanel>
-            </StackPanel>
-
-            <!-- About -->
-            <StackPanel Spacing="12">
-                <TextBlock Text="ABOUT" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
-                           CharacterSpacing="80" />
-
-                <StackPanel Spacing="16"
-                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                            BorderThickness="1" CornerRadius="8" Padding="20">
-
-                    <StackPanel Orientation="Horizontal" Spacing="12">
-                        <FontIcon Glyph="&#xE7F1;" FontSize="32" />
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock Text="Chronos" FontWeight="Bold" FontSize="18" />
-                            <TextBlock Text="Modern Disk Imaging Utility" Opacity="0.6" />
-                        </StackPanel>
-                    </StackPanel>
-
-                    <MenuFlyoutSeparator Margin="0,4" />
-
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="120" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition />
-                            <RowDefinition />
-                            <RowDefinition />
-                        </Grid.RowDefinitions>
-
-                        <TextBlock Text="Version" Opacity="0.6" Grid.Row="0" />
-                        <TextBlock Text="1.0.0" Grid.Row="0" Grid.Column="1" />
-
-                        <TextBlock Text="License" Opacity="0.6" Grid.Row="1" />
-                        <TextBlock Text="GPLv3" Grid.Row="1" Grid.Column="1" />
-
-                        <TextBlock Text="Runtime" Opacity="0.6" Grid.Row="2" />
-                        <TextBlock Text=".NET 10 + WinUI 3" Grid.Row="2" Grid.Column="1" />
-                    </Grid>
                 </StackPanel>
             </StackPanel>
 
