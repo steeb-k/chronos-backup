@@ -1,8 +1,11 @@
 <Solution>
+  <Configurations>
+    <Platform Name="x86" />
+    <Platform Name="x64" />
+    <Platform Name="ARM64" />
+  </Configurations>
   <Folder Name="/src/">
-    <Project Path="src/Chronos.App.csproj">
-      <Platform Project="x86" />
-    </Project>
+    <Project Path="src/Chronos.App.csproj" />
     <Project Path="src/Chronos.Common/Chronos.Common.csproj" />
     <Project Path="src/Chronos.Core/Chronos.Core.csproj" />
     <Project Path="src/Chronos.Native/Chronos.Native.csproj" />
