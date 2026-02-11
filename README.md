@@ -76,12 +76,27 @@ dotnet publish src/Chronos.App.csproj -c Release -r win-x64 --self-contained -p:
 
 # ARM64 Release
 dotnet publish src/Chronos.App.csproj -c Release -r win-arm64 --self-contained -p:Platform=ARM64
-
-# x86 Release
-dotnet publish src/Chronos.App.csproj -c Release -r win-x86 --self-contained -p:Platform=x86
 ```
 
-Output location: `src/bin/<Platform>/Release/net10.0-windows10.0.19041.0/win-<rid>/publish/`
+Output location: `src/bin/Release/net10.0-windows10.0.19041.0/win-<rid>/publish/`
+
+#### Creating Installers and Portable ZIPs
+
+Use the release build script to generate installers (requires [Inno Setup 6+](https://jrsoftware.org/isdl.php)) and portable ZIP files:
+
+```powershell
+.\scripts\Build-Release.ps1 -Version "1.0.0"
+```
+
+This creates in the `dist/` folder:
+- `Chronos-1.0.0-x64-Setup.exe` — Windows installer for x64
+- `Chronos-1.0.0-arm64-Setup.exe` — Windows installer for ARM64
+- `Chronos-1.0.0-x64-Portable.zip` — Portable ZIP for x64
+- `Chronos-1.0.0-arm64-Portable.zip` — Portable ZIP for ARM64
+
+Options:
+- `-SkipBuild` — Use existing binaries (skip `dotnet publish`)
+- `-SkipInstaller` — Only create ZIP files (skip Inno Setup)
 
 #### Run from Source
 

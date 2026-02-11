@@ -139,3 +139,5 @@ $RECYCLE.BIN/
 # Backup files
 *.bak
 *.backup
+# Release output
+dist/
