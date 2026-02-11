@@ -21,6 +21,7 @@ public interface IRestoreEngine
     /// Validates that the restore can proceed safely.
     /// </summary>
     /// <param name="job">The restore job to validate.</param>
-    /// <returns>True if the restore is safe to proceed.</returns>
-    Task<bool> ValidateRestoreAsync(RestoreJob job);
+    /// <exception cref="InvalidOperationException">Thrown if validation fails with details about why.</exception>
+    /// <returns>A task that completes if validation succeeds.</returns>
+    Task ValidateRestoreAsync(RestoreJob job);
 }

@@ -1,4 +1,7 @@
 using Chronos.Core.Models;
+using Chronos.Native.Win32;
+using Serilog;
+using System.IO;
 using System.Linq;
 
 namespace Chronos.Core.Services;
@@ -82,14 +85,15 @@ public class DiskEnumerator : IDiskEnumerator
                     {
                         try
                         {
+                            var diskNumber = uint.Parse(disk["Index"].ToString() ?? "0");
                             var diskInfo = new DiskInfo
                             {
-                                DiskNumber = uint.Parse(disk["Index"].ToString() ?? "0"),
+                                DiskNumber = diskNumber,
                                 Manufacturer = disk["Manufacturer"]?.ToString() ?? "Unknown",
                                 Model = disk["Model"]?.ToString() ?? "Unknown",
                                 SerialNumber = disk["SerialNumber"]?.ToString() ?? "Unknown",
                                 Size = ulong.TryParse(disk["Size"]?.ToString() ?? "0", out var size) ? size : 0,
-                                PartitionStyle = DiskPartitionStyle.MBR, // Default; could be enhanced to detect GUID
+                                PartitionStyle = GetPartitionStyle(diskNumber),
                             };
 
                             disks.Add(diskInfo);
@@ -116,6 +120,11 @@ public class DiskEnumerator : IDiskEnumerator
         {
             var partitions = new List<PartitionInfo>();
 
+            // First, get the real drive layout from IOCTL to know exact device partition numbers.
+            // WMI may skip certain partition types (MSR, EFI) making its index unreliable.
+            var driveLayout = Chronos.Native.Win32.DiskApi.GetDriveLayout(diskNumber);
+            Log.Debug("Drive layout for disk {Disk}: {Count} partitions from IOCTL", diskNumber, driveLayout.Count);
+
             try
             {
                 // Use WMI to get partitions on this disk
@@ -127,22 +136,41 @@ public class DiskEnumerator : IDiskEnumerator
                         try
                         {
                             var deviceId = partition["DeviceID"]?.ToString() ?? string.Empty;
-                            // DeviceID "Disk #0, Partition #1" matches \\.\Harddisk0Partition1 (1-based)
-                            var partitionNumber = ParsePartitionNumber(deviceId);
-                            if (partitionNumber == 0)
+                            var wmiOffset = long.TryParse(partition["StartingOffset"]?.ToString() ?? "0", out var off) ? off : 0L;
+
+                            // Match this WMI partition to the IOCTL drive layout by starting offset.
+                            // This is the only reliable way since WMI may skip partitions (MSR, etc.)
+                            // and its index doesn't match \\.\Harddisk{N}Partition{M} numbering.
+                            uint partitionNumber = 0;
+                            var layoutMatch = driveLayout.FirstOrDefault(e => e.StartingOffset == wmiOffset);
+                            if (layoutMatch.PartitionNumber > 0)
                             {
-                                var idx = TryGetUint(partition, "PartitionNumber") ?? TryGetUint(partition, "Index");
-                                partitionNumber = idx.HasValue && idx.Value > 0 ? idx.Value : 1; // never use 0 for device path
+                                partitionNumber = layoutMatch.PartitionNumber;
                             }
-                            var volumePath = GetVolumePathForPartition(partition);
+                            else
+                            {
+                                // Fallback: WMI index + 1 (may be wrong if hidden partitions exist)
+                                var wmIndex = ParsePartitionNumber(deviceId);
+                                partitionNumber = wmIndex != uint.MaxValue ? wmIndex + 1 : 1;
+                                Log.Warning("Could not match WMI partition {DeviceID} (offset {Offset}) to drive layout; using fallback partition number {Num}",
+                                    deviceId, wmiOffset, partitionNumber);
+                            }
+
+                            var (volumePath, driveLetter) = GetVolumePathAndLetterForPartition(partition);
+                            var partType = ClassifyPartitionType(partition);
                             var partInfo = new PartitionInfo
                             {
                                 DiskNumber = diskNumber,
                                 PartitionNumber = partitionNumber,
                                 Size = ulong.TryParse(partition["Size"]?.ToString() ?? "0", out var size) ? size : 0,
-                                Offset = ulong.TryParse(partition["StartingOffset"]?.ToString() ?? "0", out var offset) ? offset : 0,
+                                Offset = (ulong)wmiOffset,
                                 VolumePath = volumePath,
+                                DriveLetter = driveLetter,
+                                PartitionType = partType,
                             };
+
+                            Log.Debug("Partition enumerated: WMI DeviceID={DeviceID}, Offset={Offset} → DevicePartition={PartNum}, Size={Size}, Type={Type}",
+                                deviceId, wmiOffset, partitionNumber, partInfo.Size, partType);
 
                             partitions.Add(partInfo);
                         }
@@ -157,6 +185,12 @@ public class DiskEnumerator : IDiskEnumerator
             {
                 // If WMI fails, return empty list
             }
+
+            // Resolve volume GUID paths for partitions that don't have drive letters
+            ResolveVolumeGuidPaths(diskNumber, partitions);
+
+            // Enrich each partition that has a volume path with label, filesystem, used/free
+            EnrichPartitionsWithVolumeMetadata(partitions);
 
             return partitions;
         });
@@ -178,22 +212,22 @@ public class DiskEnumerator : IDiskEnumerator
     private static uint ParsePartitionNumber(string deviceId)
     {
         if (string.IsNullOrWhiteSpace(deviceId))
-            return 0;
+            return uint.MaxValue;
 
-        // Example: "Disk #0, Partition #1"
+        // Example: "Disk #0, Partition #1" — the number after last '#' is the 0-based WMI index
         var hashIndex = deviceId.LastIndexOf('#');
         if (hashIndex < 0 || hashIndex == deviceId.Length - 1)
-            return 0;
+            return uint.MaxValue;
 
         var digits = new string(deviceId.Skip(hashIndex + 1).TakeWhile(char.IsDigit).ToArray());
-        return uint.TryParse(digits, out var value) ? value : 0;
+        return uint.TryParse(digits, out var value) ? value : uint.MaxValue;
     }
 
     /// <summary>
-    /// Gets the volume path (e.g. \\.\C:) for a partition via Win32_LogicalDiskToPartition.
-    /// Returns null if the partition has no drive letter.
+    /// Gets the volume path (e.g. \\.\C:) and drive letter for a partition via Win32_LogicalDiskToPartition.
+    /// Returns (null, null) if the partition has no drive letter.
     /// </summary>
-    private static string? GetVolumePathForPartition(System.Management.ManagementBaseObject partition)
+    private static (string? VolumePath, string? DriveLetter) GetVolumePathAndLetterForPartition(System.Management.ManagementBaseObject partition)
     {
         try
         {
@@ -204,8 +238,7 @@ public class DiskEnumerator : IDiskEnumerator
                 var deviceId = logicalDisk["DeviceID"]?.ToString();
                 if (!string.IsNullOrEmpty(deviceId) && deviceId.Length >= 2 && deviceId[1] == ':')
                 {
-                    // e.g. "C:" -> "\\.\C:"
-                    return $"\\\\.\\{deviceId}";
+                    return ($"\\\\.\\{deviceId}", deviceId);
                 }
             }
         }
@@ -214,11 +247,228 @@ public class DiskEnumerator : IDiskEnumerator
             // Ignore - partition may not have a drive letter
         }
 
-        return null;
+        return (null, null);
+    }
+
+    /// <summary>
+    /// Classifies partition type from WMI Win32_DiskPartition fields.
+    /// </summary>
+    private static string? ClassifyPartitionType(System.Management.ManagementBaseObject partition)
+    {
+        try
+        {
+            var type = partition["Type"]?.ToString() ?? string.Empty;
+            // WMI Type strings: "GPT: System", "GPT: Basic Data", "GPT: Unknown", "Installable File System", etc.
+            if (type.Contains("System", StringComparison.OrdinalIgnoreCase) ||
+                type.Contains("EFI", StringComparison.OrdinalIgnoreCase))
+                return "EFI (ESP)";
+            if (type.Contains("Basic Data", StringComparison.OrdinalIgnoreCase) ||
+                type.Contains("Installable", StringComparison.OrdinalIgnoreCase))
+                return "Primary";
+            if (type.Contains("Recovery", StringComparison.OrdinalIgnoreCase))
+                return "Recovery";
+            if (type.Contains("Reserved", StringComparison.OrdinalIgnoreCase) ||
+                type.Contains("MSR", StringComparison.OrdinalIgnoreCase))
+                return "MSR";
+
+            // Check if it's a recovery partition by checking the bootable flag and small size
+            var bootable = partition["Bootable"]?.ToString();
+            var sizeStr = partition["Size"]?.ToString() ?? "0";
+            if (ulong.TryParse(sizeStr, out var size) && size > 0 && size < 2UL * 1024 * 1024 * 1024)
+            {
+                // Small non-system, non-basic partition is likely recovery
+                if (!string.IsNullOrEmpty(type) && type.Contains("Unknown", StringComparison.OrdinalIgnoreCase))
+                    return "Recovery";
+            }
+
+            return !string.IsNullOrEmpty(type) ? type : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Enriches partitions with volume metadata (label, filesystem, used/free space)
+    /// by querying DriveInfo or WMI Win32_Volume for each volume path.
+    /// </summary>
+    private static void EnrichPartitionsWithVolumeMetadata(List<PartitionInfo> partitions)
+    {
+        foreach (var part in partitions)
+        {
+            if (string.IsNullOrEmpty(part.VolumePath))
+                continue;
+
+            try
+            {
+                // Try DriveInfo first (works for drive-letter volumes)
+                if (!string.IsNullOrEmpty(part.DriveLetter))
+                {
+                    var di = new DriveInfo(part.DriveLetter[..1]);
+                    if (di.IsReady)
+                    {
+                        part.FileSystem = di.DriveFormat;
+                        part.VolumeLabel = string.IsNullOrWhiteSpace(di.VolumeLabel) ? null : di.VolumeLabel;
+                        part.UsedSpace = (ulong)(di.TotalSize - di.TotalFreeSpace);
+                        part.FreeSpace = (ulong)di.TotalFreeSpace;
+                        continue;
+                    }
+                }
+
+                // Fallback: WMI Win32_Volume for GUID-only volumes
+                EnrichFromWmiVolume(part);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Failed to enrich partition {Part}: {Error}", part.PartitionNumber, ex.Message);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Queries WMI Win32_Volume for a volume matching the given device path.
+    /// Works for \\?\Volume{GUID} paths that don't have drive letters.
+    /// </summary>
+    private static void EnrichFromWmiVolume(PartitionInfo part)
+    {
+        try
+        {
+            // Win32_Volume DeviceID uses \\?\Volume{GUID}\ (with trailing backslash)
+            var guidPath = part.VolumePath!;
+            if (!guidPath.EndsWith('\\'))
+                guidPath += "\\";
+
+            // Normalize \\.\X: to X:\ for matching
+            string wmiFilter;
+            if (guidPath.StartsWith("\\\\.\\") && guidPath.Length >= 6 && guidPath[5] == ':')
+            {
+                // Drive letter path — skip WMI for these (DriveInfo should work)
+                return;
+            }
+            else
+            {
+                // Volume GUID path
+                wmiFilter = $"DeviceID='{EscapeWmiString(guidPath)}'";
+            }
+
+            using var searcher = new System.Management.ManagementObjectSearcher(
+                $"SELECT FileSystem, Label, Capacity, FreeSpace FROM Win32_Volume WHERE {wmiFilter}");
+            foreach (var vol in searcher.Get())
+            {
+                part.FileSystem = vol["FileSystem"]?.ToString();
+                var label = vol["Label"]?.ToString();
+                part.VolumeLabel = string.IsNullOrWhiteSpace(label) ? null : label;
+
+                if (ulong.TryParse(vol["Capacity"]?.ToString(), out var capacity) &&
+                    ulong.TryParse(vol["FreeSpace"]?.ToString(), out var freeSpace))
+                {
+                    part.FreeSpace = freeSpace;
+                    part.UsedSpace = capacity > freeSpace ? capacity - freeSpace : 0;
+                }
+                break; // take first match
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("WMI volume enrichment failed for partition {Part}: {Error}", part.PartitionNumber, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Queries MSFT_Disk from the Storage WMI namespace to determine partition style.
+    /// </summary>
+    private static DiskPartitionStyle GetPartitionStyle(uint diskNumber)
+    {
+        try
+        {
+            using var searcher = new System.Management.ManagementObjectSearcher(
+                @"root\Microsoft\Windows\Storage",
+                $"SELECT PartitionStyle FROM MSFT_Disk WHERE Number = {diskNumber}");
+            foreach (var result in searcher.Get())
+            {
+                var style = result["PartitionStyle"]?.ToString();
+                return style switch
+                {
+                    "1" => DiskPartitionStyle.MBR,
+                    "2" => DiskPartitionStyle.GPT,
+                    _ => DiskPartitionStyle.Unknown,
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("Failed to query partition style for disk {Disk}: {Error}", diskNumber, ex.Message);
+        }
+        return DiskPartitionStyle.Unknown;
     }
 
     private static string EscapeWmiString(string value)
     {
         return value.Replace("\\", "\\\\").Replace("'", "\\'");
+    }
+
+    /// <summary>
+    /// For partitions that have no drive letter (VolumePath == null), enumerate all
+    /// volume GUID paths on the system and match them to the target disk by offset.
+    /// This resolves volumes on read-only attached VHDXs that don't get drive letters.
+    /// </summary>
+    private static void ResolveVolumeGuidPaths(uint diskNumber, List<PartitionInfo> partitions)
+    {
+        // Only bother if there are partitions without a volume path
+        var unresolved = partitions.Where(p => string.IsNullOrEmpty(p.VolumePath)).ToList();
+        if (unresolved.Count == 0)
+            return;
+
+        Log.Debug("Resolving volume GUID paths for {Count} partitions without drive letters on disk {Disk}",
+            unresolved.Count, diskNumber);
+
+        try
+        {
+            var volumeGuids = VolumeApi.EnumerateVolumeGuids();
+            Log.Debug("Found {Count} volume GUIDs on system", volumeGuids.Count);
+
+            foreach (var volumeGuid in volumeGuids)
+            {
+                // Strip trailing backslash to get device path for CreateFile
+                var devicePath = VolumeApi.VolumeGuidToDevicePath(volumeGuid);
+                var extent = VolumeApi.GetVolumeDiskExtent(devicePath);
+                if (extent is null)
+                    continue;
+
+                var diskExtent = extent.Value;
+
+                // Check if this volume belongs to our target disk
+                if (diskExtent.DiskNumber != diskNumber)
+                    continue;
+
+                // Match by starting offset — most reliable way to map volume to partition
+                var matchingPartition = unresolved.FirstOrDefault(p =>
+                    (long)p.Offset == diskExtent.StartingOffset);
+
+                if (matchingPartition != null)
+                {
+                    matchingPartition.VolumePath = devicePath;
+                    Log.Information(
+                        "Resolved volume GUID path for disk {Disk} partition {Part} (offset {Offset}): {Path}",
+                        diskNumber, matchingPartition.PartitionNumber, matchingPartition.Offset, devicePath);
+
+                    // Remove from unresolved list
+                    unresolved.Remove(matchingPartition);
+                    if (unresolved.Count == 0)
+                        break;
+                }
+            }
+
+            if (unresolved.Count > 0)
+            {
+                Log.Debug("{Count} partitions on disk {Disk} still have no volume path (may be non-NTFS or unmounted)",
+                    unresolved.Count, diskNumber);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to resolve volume GUID paths for disk {Disk}", diskNumber);
+        }
     }
 }

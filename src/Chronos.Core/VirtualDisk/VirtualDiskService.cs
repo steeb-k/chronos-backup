@@ -115,24 +115,22 @@ public class VirtualDiskService : IVirtualDiskService
                 VendorId = new Guid("EC984AEC-A0F9-47E9-901F-71415A66345B")
             };
 
-            var accessMask = readOnly 
-                ? VirtualDiskInterop.VirtualDiskAccessMask.AttachReadOnly
-                : VirtualDiskInterop.VirtualDiskAccessMask.AttachReadWrite;
+            var accessMask = readOnly
+                ? VirtualDiskInterop.VirtualDiskAccessMask.AttachReadOnly | VirtualDiskInterop.VirtualDiskAccessMask.GetInfo
+                : VirtualDiskInterop.VirtualDiskAccessMask.All;
 
-            var parameters = new VirtualDiskInterop.OpenVirtualDiskParametersV2
+            var openParams = new VirtualDiskInterop.OpenVirtualDiskParametersV1
             {
-                Version = VirtualDiskInterop.OpenVirtualDiskVersion.Version2,
-                ReadOnly = readOnly,
-                GetInfoOnly = false,
-                ResiliencyGuid = Guid.Empty
+                Version = VirtualDiskInterop.OpenVirtualDiskVersion.Version1,
+                RWDepth = readOnly ? 0u : 1u
             };
 
-            uint result = VirtualDiskInterop.OpenVirtualDisk(
+            uint result = VirtualDiskInterop.OpenVirtualDiskV1(
                 ref storageType,
                 path,
                 accessMask,
                 VirtualDiskInterop.OpenVirtualDiskFlags.None,
-                ref parameters,
+                ref openParams,
                 out SafeFileHandle handle);
 
             if (result != 0)
@@ -156,26 +154,28 @@ public class VirtualDiskService : IVirtualDiskService
         return await Task.Run(() =>
         {
             Log.Debug("MountToDriveLetter: path={Path}, readOnly={ReadOnly}", path, readOnly);
-            
+
+            // Snapshot existing drive letters before attach
+            var drivesBefore = new HashSet<char>(
+                DriveInfo.GetDrives().Select(d => char.ToUpper(d.Name[0])));
+
             var storageType = new VirtualDiskInterop.VirtualStorageTypeStruct
             {
                 DeviceId = VirtualDiskInterop.VirtualStorageType.VHDX,
                 VendorId = new Guid("EC984AEC-A0F9-47E9-901F-71415A66345B")
             };
 
-            var openParams = new VirtualDiskInterop.OpenVirtualDiskParametersV2
+            var accessMask = readOnly
+                ? VirtualDiskInterop.VirtualDiskAccessMask.AttachReadOnly | VirtualDiskInterop.VirtualDiskAccessMask.Detach | VirtualDiskInterop.VirtualDiskAccessMask.GetInfo
+                : VirtualDiskInterop.VirtualDiskAccessMask.AttachReadWrite | VirtualDiskInterop.VirtualDiskAccessMask.Detach | VirtualDiskInterop.VirtualDiskAccessMask.GetInfo;
+
+            var openParams = new VirtualDiskInterop.OpenVirtualDiskParametersV1
             {
-                Version = VirtualDiskInterop.OpenVirtualDiskVersion.Version2,
-                ReadOnly = readOnly,
-                GetInfoOnly = false,
-                ResiliencyGuid = Guid.Empty
+                Version = VirtualDiskInterop.OpenVirtualDiskVersion.Version1,
+                RWDepth = readOnly ? 0u : 1u
             };
 
-            var accessMask = readOnly 
-                ? VirtualDiskInterop.VirtualDiskAccessMask.AttachReadOnly
-                : VirtualDiskInterop.VirtualDiskAccessMask.AttachReadWrite;
-
-            uint result = VirtualDiskInterop.OpenVirtualDisk(
+            uint result = VirtualDiskInterop.OpenVirtualDiskV1(
                 ref storageType,
                 path,
                 accessMask,
@@ -192,10 +192,6 @@ public class VirtualDiskService : IVirtualDiskService
 
             try
             {
-                // Find an available drive letter
-                char driveLetter = FindAvailableDriveLetter();
-                Log.Debug("Found available drive letter: {Letter}", driveLetter);
-
                 var attachParams = new VirtualDiskInterop.AttachVirtualDiskParametersV1
                 {
                     Version = 1,
@@ -222,6 +218,26 @@ public class VirtualDiskService : IVirtualDiskService
                     throw new InvalidOperationException($"Failed to attach virtual disk: Error {result}");
                 }
 
+                // Wait for the OS to assign a drive letter
+                char? driveLetter = null;
+                for (int attempt = 0; attempt < 20; attempt++)
+                {
+                    Thread.Sleep(500);
+                    var drivesAfter = DriveInfo.GetDrives()
+                        .Select(d => char.ToUpper(d.Name[0]))
+                        .Where(c => !drivesBefore.Contains(c))
+                        .ToList();
+
+                    if (drivesAfter.Count > 0)
+                    {
+                        driveLetter = drivesAfter[0];
+                        break;
+                    }
+                }
+
+                if (driveLetter is null)
+                    throw new InvalidOperationException("Virtual disk attached but no drive letter was assigned by the OS.");
+
                 Log.Information("Successfully mounted VHDX to drive letter: {Letter}", driveLetter);
                 
                 // Track the mounted disk so we can dismount it later
@@ -230,7 +246,7 @@ public class VirtualDiskService : IVirtualDiskService
                     _mountedDisks[path] = handle;
                 }
                 
-                return driveLetter;
+                return driveLetter.Value;
             }
             catch
             {
@@ -307,23 +323,34 @@ public class VirtualDiskService : IVirtualDiskService
     }
 
     /// <summary>
-    /// Dismounts all tracked VHDXs. Call this on application exit.
+    /// Dismounts all tracked VHDXs synchronously. Safe to call from UI thread during shutdown.
     /// </summary>
     public void DismountAll()
     {
-        Log.Debug("DismountAll: dismounting {Count} VHDXs", _mountedDisks.Count);
-        
-        List<string> paths;
+        List<KeyValuePair<string, SafeFileHandle>> entries;
         lock (_lock)
         {
-            paths = _mountedDisks.Keys.ToList();
+            entries = _mountedDisks.ToList();
+            _mountedDisks.Clear();
         }
 
-        foreach (var path in paths)
+        Log.Debug("DismountAll: dismounting {Count} VHDXs", entries.Count);
+
+        foreach (var (path, handle) in entries)
         {
             try
             {
-                DismountAsync(path).GetAwaiter().GetResult();
+                if (handle is not null && !handle.IsInvalid)
+                {
+                    Log.Debug("DismountAll: detaching {Path}", path);
+                    uint result = VirtualDiskInterop.DetachVirtualDisk(handle, 0, 0);
+                    if (result != 0)
+                        Log.Warning("DetachVirtualDisk failed: result={Result} for {Path}", result, path);
+                    else
+                        Log.Information("Successfully dismounted VHDX: {Path}", path);
+
+                    handle.Dispose();
+                }
             }
             catch (Exception ex)
             {
@@ -343,18 +370,16 @@ public class VirtualDiskService : IVirtualDiskService
                 VendorId = new Guid("EC984AEC-A0F9-47E9-901F-71415A66345B")
             };
 
-            var openParams = new VirtualDiskInterop.OpenVirtualDiskParametersV2
+            var openParams = new VirtualDiskInterop.OpenVirtualDiskParametersV1
             {
-                Version = VirtualDiskInterop.OpenVirtualDiskVersion.Version2,
-                ReadOnly = false,
-                GetInfoOnly = false,
-                ResiliencyGuid = Guid.Empty
+                Version = VirtualDiskInterop.OpenVirtualDiskVersion.Version1,
+                RWDepth = 1
             };
 
-            uint result = VirtualDiskInterop.OpenVirtualDisk(
+            uint result = VirtualDiskInterop.OpenVirtualDiskV1(
                 ref storageType,
                 path,
-                VirtualDiskInterop.VirtualDiskAccessMask.AttachReadWrite,
+                VirtualDiskInterop.VirtualDiskAccessMask.AttachReadWrite | VirtualDiskInterop.VirtualDiskAccessMask.Detach | VirtualDiskInterop.VirtualDiskAccessMask.GetInfo,
                 VirtualDiskInterop.OpenVirtualDiskFlags.None,
                 ref openParams,
                 out SafeFileHandle handle);
@@ -530,18 +555,16 @@ public class VirtualDiskService : IVirtualDiskService
                 VendorId = new Guid("EC984AEC-A0F9-47E9-901F-71415A66345B")
             };
 
-            var openParams = new VirtualDiskInterop.OpenVirtualDiskParametersV2
+            var openParams = new VirtualDiskInterop.OpenVirtualDiskParametersV1
             {
-                Version = VirtualDiskInterop.OpenVirtualDiskVersion.Version2,
-                ReadOnly = true,
-                GetInfoOnly = false,
-                ResiliencyGuid = Guid.Empty
+                Version = VirtualDiskInterop.OpenVirtualDiskVersion.Version1,
+                RWDepth = 0 // 0 for read-only
             };
 
-            uint result = VirtualDiskInterop.OpenVirtualDisk(
+            uint result = VirtualDiskInterop.OpenVirtualDiskV1(
                 ref storageType,
                 path,
-                VirtualDiskInterop.VirtualDiskAccessMask.AttachReadOnly,
+                VirtualDiskInterop.VirtualDiskAccessMask.AttachReadOnly | VirtualDiskInterop.VirtualDiskAccessMask.Detach | VirtualDiskInterop.VirtualDiskAccessMask.GetInfo,
                 VirtualDiskInterop.OpenVirtualDiskFlags.None,
                 ref openParams,
                 out SafeFileHandle handle);

@@ -1,6 +1,8 @@
 using Chronos.App.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml.Controls;
+using System.ComponentModel;
+using System.Linq;
 using System.Runtime.InteropServices;
 using Chronos.App.Services;
 using Windows.Storage.Pickers;
@@ -18,11 +20,50 @@ public sealed partial class RestorePage : Page
         this.InitializeComponent();
         this.DataContext = ViewModel;
         
+        // Update InfoBar severity when status changes
+        ViewModel.PropertyChanged += OnViewModelPropertyChanged;
+
         this.Loaded += async (s, e) =>
         {
             if (ViewModel.AvailableDisks.Count == 0)
                 await ViewModel.LoadDisksCommand.ExecuteAsync(null);
         };
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(RestoreViewModel.StatusMessage) or nameof(RestoreViewModel.IsStatusError))
+        {
+            if (ViewModel.IsStatusError)
+                StatusInfoBar.Severity = InfoBarSeverity.Error;
+            else if (ViewModel.StatusMessage.Contains("completed successfully", StringComparison.OrdinalIgnoreCase))
+                StatusInfoBar.Severity = InfoBarSeverity.Success;
+            else if (ViewModel.StatusMessage.StartsWith("Warning", StringComparison.OrdinalIgnoreCase))
+                StatusInfoBar.Severity = InfoBarSeverity.Warning;
+            else
+                StatusInfoBar.Severity = InfoBarSeverity.Informational;
+        }
+
+        if (e.PropertyName is nameof(RestoreViewModel.SelectedTargetDisk) or nameof(RestoreViewModel.AvailableTargetPartitions))
+        {
+            TargetDiskMap.Disk = ViewModel.SelectedTargetDisk;
+            // Filter out the "Entire Disk" sentinel from the visual disk map
+            TargetDiskMap.Partitions = ViewModel.AvailableTargetPartitions
+                .Where(p => p != RestoreViewModel.EntireDiskSentinel).ToList();
+        }
+
+        if (e.PropertyName is nameof(RestoreViewModel.SelectedTargetPartition))
+        {
+            // Highlight the selected partition on the target disk map
+            TargetDiskMap.HighlightedPartition = ViewModel.IsPartitionRestore
+                ? ViewModel.SelectedTargetPartition : null;
+        }
+
+        if (e.PropertyName is nameof(RestoreViewModel.SourceDisk) or nameof(RestoreViewModel.SourcePartitions))
+        {
+            SourceDiskMap.Disk = ViewModel.SourceDisk;
+            SourceDiskMap.Partitions = ViewModel.SourcePartitions;
+        }
     }
 
     private void OnBrowseImageClick(object sender, RoutedEventArgs e)

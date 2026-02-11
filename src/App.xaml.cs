@@ -75,6 +75,32 @@ public partial class App : Application
         _window.Closed += OnMainWindowClosed;
         
         _window.Activate();
+
+        // Apply saved theme to the root element
+        ApplyStartupTheme();
+    }
+
+    private static void ApplyStartupTheme()
+    {
+        try
+        {
+            var settings = Services.GetService<ISettingsService>();
+            if (settings is null) return;
+
+            var theme = settings.ThemeMode switch
+            {
+                1 => Microsoft.UI.Xaml.ElementTheme.Light,
+                2 => Microsoft.UI.Xaml.ElementTheme.Dark,
+                _ => Microsoft.UI.Xaml.ElementTheme.Default
+            };
+
+            if (MainWindow?.Content is FrameworkElement root)
+                root.RequestedTheme = theme;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to apply startup theme");
+        }
     }
 
     private void OnMainWindowClosed(object sender, Microsoft.UI.Xaml.WindowEventArgs args)
@@ -102,6 +128,7 @@ public partial class App : Application
         services.AddSingleton<IVssService, VssService>();
         services.AddSingleton<IDiskReader, DiskReader>();
         services.AddSingleton<IDiskWriter, DiskWriter>();
+        services.AddSingleton<IDiskPreparationService, DiskPreparationService>();
         services.AddSingleton<IVirtualDiskService, VirtualDiskService>();
         services.AddSingleton<ICompressionProvider, ZstdCompressionProvider>();
         services.AddSingleton<IBackupEngine, BackupEngine>();
@@ -114,6 +141,7 @@ public partial class App : Application
         // ViewModels
         services.AddTransient<MainViewModel>();
         services.AddTransient<BackupViewModel>();
+        services.AddTransient<CloneViewModel>();
         services.AddTransient<RestoreViewModel>();
         services.AddTransient<VerifyViewModel>();
         services.AddTransient<BrowseViewModel>();

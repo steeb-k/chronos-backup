@@ -1,18 +1,23 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Chronos.App.Services;
+using Microsoft.UI.Xaml;
+using Serilog;
 
 namespace Chronos.App.ViewModels;
 
 public partial class OptionsViewModel : ObservableObject
 {
     private readonly ISettingsService? _settingsService;
+    private bool _isLoading;
 
     [ObservableProperty] public partial int DefaultCompressionLevel { get; set; } = 3;
     [ObservableProperty] public partial string DefaultBackupPath { get; set; } = string.Empty;
     [ObservableProperty] public partial bool UseVssByDefault { get; set; } = true;
     [ObservableProperty] public partial bool VerifyByDefault { get; set; } = true;
-    [ObservableProperty] public partial bool UseDarkTheme { get; set; } = true;
+
+    /// <summary>0 = System, 1 = Light, 2 = Dark</summary>
+    [ObservableProperty] public partial int ThemeMode { get; set; } = 0;
 
     public OptionsViewModel(ISettingsService? settingsService = null)
     {
@@ -25,51 +30,70 @@ public partial class OptionsViewModel : ObservableObject
         if (_settingsService is null)
             return;
 
-        DefaultCompressionLevel = _settingsService.DefaultCompressionLevel;
-        DefaultBackupPath = _settingsService.DefaultBackupPath;
-        UseVssByDefault = _settingsService.UseVssByDefault;
-        VerifyByDefault = _settingsService.VerifyByDefault;
-        UseDarkTheme = _settingsService.UseDarkTheme;
+        _isLoading = true;
+        try
+        {
+            DefaultCompressionLevel = _settingsService.DefaultCompressionLevel;
+            DefaultBackupPath = _settingsService.DefaultBackupPath;
+            UseVssByDefault = _settingsService.UseVssByDefault;
+            VerifyByDefault = _settingsService.VerifyByDefault;
+            ThemeMode = _settingsService.ThemeMode;
+        }
+        finally
+        {
+            _isLoading = false;
+        }
     }
 
-    [RelayCommand]
     private void SaveSettings()
     {
-        if (_settingsService is null)
+        if (_settingsService is null || _isLoading)
             return;
 
         _settingsService.DefaultCompressionLevel = DefaultCompressionLevel;
         _settingsService.DefaultBackupPath = DefaultBackupPath;
         _settingsService.UseVssByDefault = UseVssByDefault;
         _settingsService.VerifyByDefault = VerifyByDefault;
-        _settingsService.UseDarkTheme = UseDarkTheme;
+        _settingsService.ThemeMode = ThemeMode;
 
         _settingsService.SaveSettings();
     }
 
-    partial void OnDefaultCompressionLevelChanged(int value)
+    partial void OnDefaultCompressionLevelChanged(int value) => SaveSettings();
+    partial void OnDefaultBackupPathChanged(string value) => SaveSettings();
+    partial void OnUseVssByDefaultChanged(bool value) => SaveSettings();
+    partial void OnVerifyByDefaultChanged(bool value) => SaveSettings();
+
+    partial void OnThemeModeChanged(int value)
     {
         SaveSettings();
+        ApplyTheme();
     }
 
-    partial void OnDefaultBackupPathChanged(string value)
+    /// <summary>
+    /// Applies the current theme to the app's root FrameworkElement.
+    /// </summary>
+    public void ApplyTheme()
     {
-        SaveSettings();
-    }
+        var theme = ThemeMode switch
+        {
+            1 => ElementTheme.Light,
+            2 => ElementTheme.Dark,
+            _ => ElementTheme.Default
+        };
 
-    partial void OnUseVssByDefaultChanged(bool value)
-    {
-        SaveSettings();
-    }
-
-    partial void OnVerifyByDefaultChanged(bool value)
-    {
-        SaveSettings();
-    }
-
-    partial void OnUseDarkThemeChanged(bool value)
-    {
-        SaveSettings();
+        try
+        {
+            if (App.MainWindow?.Content is FrameworkElement root)
+            {
+                root.RequestedTheme = theme;
+                Log.Debug("Applied theme: {Theme}", theme);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to apply theme");
+        }
     }
 }
 

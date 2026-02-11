@@ -4,9 +4,11 @@ using Chronos.Core.Imaging;
 using Chronos.Core.Models;
 using Chronos.Core.Services;
 using Chronos.Core.Progress;
+using System.Linq;
 using Windows.Storage.Pickers;
 using WinRT.Interop;
 using Microsoft.UI.Dispatching;
+using Serilog;
 
 namespace Chronos.App.ViewModels;
 
@@ -15,6 +17,7 @@ public partial class RestoreViewModel : ObservableObject
     private readonly IRestoreEngine? _restoreEngine;
     private readonly IDiskEnumerator? _diskEnumerator;
     private CancellationTokenSource? _cancellationTokenSource;
+    private DispatcherQueue? _dispatcherQueue;
 
     [ObservableProperty] public partial string SourceImagePath { get; set; } = string.Empty;
     [ObservableProperty] public partial List<DiskInfo> AvailableDisks { get; set; } = new();
@@ -24,17 +27,87 @@ public partial class RestoreViewModel : ObservableObject
     [ObservableProperty] public partial bool VerifyDuringRestore { get; set; } = true;
     [ObservableProperty] public partial bool IsRestoreInProgress { get; set; }
     [ObservableProperty] public partial double ProgressPercentage { get; set; }
-    [ObservableProperty] public partial string StatusMessage { get; set; } = string.Empty;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStatusMessage))]
+    [NotifyPropertyChangedFor(nameof(IsStatusError))]
+    [NotifyPropertyChangedFor(nameof(StatusInfoBarTitle))]
+    public partial string StatusMessage { get; set; } = string.Empty;
     [ObservableProperty] public partial bool HasTargetPartitions { get; set; }
+
+    /// <summary>Sentinel value representing "Entire Disk" in the target partition dropdown.</summary>
+    public static readonly PartitionInfo EntireDiskSentinel = new()
+    {
+        DiskNumber = uint.MaxValue,
+        PartitionNumber = uint.MaxValue,
+        Size = 0,
+        PartitionType = "Entire Disk"
+    };
+
+    /// <summary>True when a specific partition is selected (not Entire Disk).</summary>
+    public bool IsPartitionRestore => SelectedTargetPartition is not null && SelectedTargetPartition != EntireDiskSentinel;
+
+    // Source image sidecar data for disk map display
+    [ObservableProperty] public partial DiskInfo? SourceDisk { get; set; }
+    [ObservableProperty] public partial List<PartitionInfo>? SourcePartitions { get; set; }
+
+    /// <summary>True when there is a non-empty status message to show in the InfoBar.</summary>
+    public bool HasStatusMessage => !string.IsNullOrEmpty(StatusMessage);
+
+    /// <summary>True when the current status message represents an error.</summary>
+    public bool IsStatusError => StatusMessage.StartsWith("Restore failed", StringComparison.OrdinalIgnoreCase)
+                              || StatusMessage.StartsWith("Restore I/O error", StringComparison.OrdinalIgnoreCase)
+                              || StatusMessage.StartsWith("Validation failed", StringComparison.OrdinalIgnoreCase)
+                              || StatusMessage.StartsWith("Validation error", StringComparison.OrdinalIgnoreCase)
+                              || StatusMessage.StartsWith("Error:", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>InfoBar title based on whether status is an error or informational.</summary>
+    public string StatusInfoBarTitle => IsStatusError ? "Error" : 
+        (StatusMessage.Contains("completed successfully", StringComparison.OrdinalIgnoreCase) ? "Success" : "Status");
     [ObservableProperty] public partial long BytesProcessed { get; set; }
     [ObservableProperty] public partial long TotalBytes { get; set; }
     [ObservableProperty] public partial long BytesPerSecond { get; set; }
     [ObservableProperty] public partial string EstimatedTimeRemaining { get; set; } = string.Empty;
 
+    public bool CanStartRestore => !string.IsNullOrWhiteSpace(SourceImagePath) && 
+        SelectedTargetDisk is not null && 
+        !IsRestoreInProgress;
+
     public RestoreViewModel(IRestoreEngine? restoreEngine = null, IDiskEnumerator? diskEnumerator = null)
     {
         _restoreEngine = restoreEngine;
         _diskEnumerator = diskEnumerator;
+        
+        // Capture the UI dispatcher queue for marshaling status updates
+        try
+        {
+            _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
+        }
+        catch
+        {
+            // If we're not on a UI thread, we'll set it later when a command is invoked
+            Log.Warning("RestoreViewModel created on non-UI thread, dispatcher will be captured later");
+        }
+    }
+
+    private void SetStatusMessageSafe(string message)
+    {
+        // Try to get dispatcher if we don't have it yet
+        _dispatcherQueue ??= DispatcherQueue.GetForCurrentThread();
+
+        if (_dispatcherQueue is not null)
+        {
+            _dispatcherQueue.TryEnqueue(() =>
+            {
+                StatusMessage = message;
+                Log.Debug("Status message updated: {Message}", message);
+            });
+        }
+        else
+        {
+            // Fallback - set directly (may not update UI)
+            StatusMessage = message;
+            Log.Warning("No dispatcher available, status message may not update UI: {Message}", message);
+        }
     }
 
     [RelayCommand]
@@ -47,6 +120,18 @@ public partial class RestoreViewModel : ObservableObject
     partial void OnSelectedTargetDiskChanged(DiskInfo? value)
     {
         _ = LoadTargetPartitionsAsync(value);
+        OnPropertyChanged(nameof(CanStartRestore));
+    }
+
+    partial void OnSourceImagePathChanged(string value)
+    {
+        OnPropertyChanged(nameof(CanStartRestore));
+        _ = LoadSourceSidecarAsync(value);
+    }
+
+    partial void OnIsRestoreInProgressChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanStartRestore));
     }
 
     private async Task LoadTargetPartitionsAsync(DiskInfo? disk)
@@ -60,9 +145,52 @@ public partial class RestoreViewModel : ObservableObject
         }
 
         var partitions = await _diskEnumerator.GetPartitionsAsync(disk.DiskNumber);
-        AvailableTargetPartitions = partitions;
-        SelectedTargetPartition = null;
-        HasTargetPartitions = partitions.Count > 0;
+
+        // Filter out MSR partitions
+        var userPartitions = partitions.Where(p =>
+            !string.Equals(p.PartitionType, "MSR", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // Prepend "Entire Disk" sentinel
+        var list = new List<PartitionInfo> { EntireDiskSentinel };
+        list.AddRange(userPartitions);
+        AvailableTargetPartitions = list;
+        SelectedTargetPartition = EntireDiskSentinel;
+        HasTargetPartitions = list.Count > 0;
+    }
+
+    private async Task LoadSourceSidecarAsync(string imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath))
+        {
+            SourceDisk = null;
+            SourcePartitions = null;
+            return;
+        }
+
+        try
+        {
+            var sidecar = await ImageSidecar.LoadAsync(imagePath);
+            if (sidecar is not null)
+            {
+                var (disk, parts) = sidecar.ToDiskAndPartitions();
+                SourceDisk = disk;
+                SourcePartitions = parts;
+                Log.Debug("Loaded sidecar for {Path}: {Count} partitions", imagePath, parts.Count);
+            }
+            else
+            {
+                SourceDisk = null;
+                SourcePartitions = null;
+                Log.Debug("No sidecar found for {Path}", imagePath);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to load sidecar for {Path}", imagePath);
+            SourceDisk = null;
+            SourcePartitions = null;
+        }
     }
 
     [RelayCommand]
@@ -106,9 +234,9 @@ public partial class RestoreViewModel : ObservableObject
 
         // Build target path
         string targetPath;
-        if (SelectedTargetPartition is not null)
+        if (IsPartitionRestore)
         {
-            targetPath = $"{SelectedTargetDisk.DiskNumber}:{SelectedTargetPartition.PartitionNumber}";
+            targetPath = $"{SelectedTargetDisk.DiskNumber}:{SelectedTargetPartition!.PartitionNumber}";
         }
         else
         {
@@ -126,11 +254,20 @@ public partial class RestoreViewModel : ObservableObject
 
         // Validate first
         StatusMessage = "Validating restore configuration...";
-        bool isValid = await _restoreEngine.ValidateRestoreAsync(job);
-        
-        if (!isValid)
+        try
         {
-            StatusMessage = "Restore validation failed. Please check your source and target selections.";
+            await _restoreEngine.ValidateRestoreAsync(job);
+        }
+        catch (InvalidOperationException ex)
+        {
+            var errorMsg = $"Validation failed: {ex.Message}";
+            SetStatusMessageSafe(errorMsg);
+            return;
+        }
+        catch (Exception ex)
+        {
+            var errorMsg = $"Validation error: {ex.Message}";
+            SetStatusMessageSafe(errorMsg);
             return;
         }
 
@@ -197,14 +334,27 @@ public partial class RestoreViewModel : ObservableObject
         catch (OperationCanceledException)
         {
             StatusMessage = "Restore cancelled";
+            Log.Warning("Restore operation cancelled by user");
+        }
+        catch (InvalidOperationException ex)
+        {
+            StatusMessage = $"Restore failed: {ex.Message}";
+            Log.Error(ex, "Restore validation or operation failed");
+        }
+        catch (IOException ex)
+        {
+            StatusMessage = $"Restore I/O error: {ex.Message}";
+            Log.Error(ex, "Restore I/O error");
         }
         catch (Exception ex)
         {
             StatusMessage = $"Restore failed: {ex.Message}";
+            Log.Error(ex, "Restore failed with unexpected error");
         }
         finally
         {
             IsRestoreInProgress = false;
+            OnPropertyChanged(nameof(CanStartRestore));
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
         }

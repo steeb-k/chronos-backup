@@ -41,7 +41,12 @@
                 <NavigationView.MenuItems>
                     <NavigationViewItem Content="Backup" Tag="backup">
                         <NavigationViewItem.Icon>
-                            <FontIcon Glyph="&#xE74E;" />
+                            <FontIcon Glyph="&#xEDA2;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem Content="Clone" Tag="clone">
+                        <NavigationViewItem.Icon>
+                            <FontIcon Glyph="&#xE8C8;" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
                     <NavigationViewItem Content="Restore" Tag="restore">
@@ -54,7 +59,7 @@
                             <FontIcon Glyph="&#xE73E;" />
                         </NavigationViewItem.Icon>
                     </NavigationViewItem>
-                    <NavigationViewItem Content="Browse Image" Tag="browse">
+                    <NavigationViewItem Content="Mount" Tag="browse">
                         <NavigationViewItem.Icon>
                             <FontIcon Glyph="&#xE8B7;" />
                         </NavigationViewItem.Icon>

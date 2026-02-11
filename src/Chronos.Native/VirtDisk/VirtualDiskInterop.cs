@@ -103,6 +103,37 @@ public static class VirtualDiskInterop
         public Guid VendorId;
     }
 
+    // Union structure for OPEN_VIRTUAL_DISK_PARAMETERS
+    [StructLayout(LayoutKind.Explicit)]
+    public struct OpenVirtualDiskParameters
+    {
+        [FieldOffset(0)]
+        public OpenVirtualDiskVersion Version;
+        
+        [FieldOffset(4)]
+        public OpenVirtualDiskParametersV1Union Version1;
+        
+        [FieldOffset(4)]
+        public OpenVirtualDiskParametersV2Union Version2;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct OpenVirtualDiskParametersV1Union
+    {
+        public uint RWDepth;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct OpenVirtualDiskParametersV2Union
+    {
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool GetInfoOnly;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool ReadOnly;
+        public Guid ResiliencyGuid;
+    }
+
+    // Legacy struct definitions - kept for backward compatibility but should migrate to OpenVirtualDiskParameters
     [StructLayout(LayoutKind.Sequential)]
     public struct OpenVirtualDiskParametersV1
     {
@@ -152,6 +183,15 @@ public static class VirtualDiskInterop
         VirtualDiskAccessMask VirtualDiskAccessMask,
         OpenVirtualDiskFlags Flags,
         ref OpenVirtualDiskParametersV2 Parameters,
+        out SafeFileHandle Handle);
+
+    [DllImport(VirtDiskDll, CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "OpenVirtualDisk")]
+    public static extern uint OpenVirtualDiskV1(
+        ref VirtualStorageTypeStruct VirtualStorageType,
+        string Path,
+        VirtualDiskAccessMask VirtualDiskAccessMask,
+        OpenVirtualDiskFlags Flags,
+        ref OpenVirtualDiskParametersV1 Parameters,
         out SafeFileHandle Handle);
 
     [DllImport(VirtDiskDll, CharSet = CharSet.Unicode, SetLastError = true)]

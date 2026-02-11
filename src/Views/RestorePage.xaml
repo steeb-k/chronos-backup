@@ -5,7 +5,13 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:converters="using:Chronos.App.Converters"
+    xmlns:local="using:Chronos.App.Views"
     mc:Ignorable="d">
+
+    <Page.Resources>
+        <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+    </Page.Resources>
 
     <ScrollViewer Padding="24,20,24,20"
                    HorizontalScrollBarVisibility="Disabled"
@@ -50,6 +56,9 @@
                         <TextBlock Text="Compressed: —" Opacity="0.7" FontSize="12" />
                         <TextBlock Text="Compression: Zstandard (level 3)" Opacity="0.7" FontSize="12" />
                     </StackPanel>
+
+                    <!-- Source image partition map (from sidecar) -->
+                    <local:DiskMapControl x:Name="SourceDiskMap" Margin="0,4,0,0" />
                 </StackPanel>
             </StackPanel>
 
@@ -72,34 +81,52 @@
                               SelectedItem="{Binding SelectedTargetDisk, Mode=TwoWay}"
                               PlaceholderText="Select target disk..." />
 
-                    <ComboBox Header="Target partition (optional)" HorizontalAlignment="Stretch"
+                    <!-- Target disk partition map -->
+                    <local:DiskMapControl x:Name="TargetDiskMap" Margin="0,4,0,0" />
+
+                    <ComboBox Header="Target partition" HorizontalAlignment="Stretch"
                               ItemsSource="{Binding AvailableTargetPartitions}"
                               SelectedItem="{Binding SelectedTargetPartition, Mode=TwoWay}"
-                              PlaceholderText="Whole disk"
                               IsEnabled="{Binding HasTargetPartitions}" />
 
-                    <ToggleSwitch Header="Verify during restore" IsOn="True"
+                    <ToggleSwitch Header="Verify during restore" IsOn="{Binding VerifyDuringRestore, Mode=TwoWay}"
                                   OnContent="Integrity check active" OffContent="Skip verification" />
                 </StackPanel>
             </StackPanel>
 
             <!-- Progress -->
-            <StackPanel x:Name="ProgressPanel" Visibility="Collapsed" Spacing="8"
+            <StackPanel x:Name="ProgressPanel" Spacing="8"
+                        Visibility="{Binding IsRestoreInProgress, Converter={StaticResource BoolToVisibilityConverter}}"
                         Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                         BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                         BorderThickness="1" CornerRadius="8" Padding="20">
                 <TextBlock Text="Restore Progress" FontWeight="SemiBold" />
-                <ProgressBar Minimum="0" Maximum="100" Value="0" />
+                <ProgressBar Minimum="0" Maximum="100" Value="{Binding ProgressPercentage}" />
                 <Grid>
-                    <TextBlock Text="Idle" Opacity="0.6" />
-                    <TextBlock Text="0%" HorizontalAlignment="Right" Opacity="0.6" />
+                    <TextBlock Text="{Binding StatusMessage}" Opacity="0.6" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding ProgressPercentage}" HorizontalAlignment="Right" Opacity="0.6" />
                 </Grid>
             </StackPanel>
 
+            <!-- Status message (always visible when non-empty, including after errors) -->
+            <InfoBar x:Name="StatusInfoBar" IsOpen="{Binding HasStatusMessage}" IsClosable="True"
+                     Title="{Binding StatusInfoBarTitle}"
+                     Message="{Binding StatusMessage}" />
+
             <!-- Action -->
             <Grid Margin="0,8,0,24">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
                 <Button Style="{StaticResource AccentButtonStyle}"
-                        Content="Start Restore" Padding="24,10" IsEnabled="False" />
+                        Content="Start Restore" Padding="24,10" 
+                        IsEnabled="{Binding CanStartRestore}"
+                        Command="{Binding StartRestoreCommand}" />
+                <Button Grid.Column="1" Content="Cancel" Padding="24,10" Margin="8,0,0,0"
+                        IsEnabled="{Binding IsRestoreInProgress}"
+                        Command="{Binding CancelRestoreCommand}" />
             </Grid>
 
         </StackPanel>

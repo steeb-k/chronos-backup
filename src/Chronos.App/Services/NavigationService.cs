@@ -18,6 +18,7 @@ public class NavigationService : INavigationService
     private static readonly Dictionary<string, Type> PageMap = new()
     {
         ["backup"] = typeof(Views.BackupPage),
+        ["clone"] = typeof(Views.ClonePage),
         ["restore"] = typeof(Views.RestorePage),
         ["verify"] = typeof(Views.VerifyPage),
         ["browse"] = typeof(Views.BrowsePage),

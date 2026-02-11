@@ -14,7 +14,7 @@ namespace Chronos.Core.Disk;
 public interface IDiskWriter
 {
     /// <summary>
-    /// Open a disk for writing.
+    /// Open a disk for writing. Locks and dismounts the disk before returning.
     /// </summary>
     Task<DiskWriteHandle> OpenDiskForWriteAsync(string diskPath, CancellationToken cancellationToken = default);
 
@@ -60,7 +60,14 @@ public class DiskWriter : IDiskWriter
         return await Task.Run(() =>
         {
             Log.Debug("OpenDiskForWrite: {Path}", diskPath);
-            var handle = DiskApi.OpenDiskForWrite(diskPath);
+            var handle = DiskApi.CreateFile(
+                diskPath,
+                0x80000000 | 0x40000000, // GENERIC_READ | GENERIC_WRITE
+                0x00000001 | 0x00000002, // FILE_SHARE_READ | FILE_SHARE_WRITE
+                IntPtr.Zero,
+                3, // OPEN_EXISTING
+                0x80, // FILE_ATTRIBUTE_NORMAL
+                IntPtr.Zero);
             int win32 = Marshal.GetLastWin32Error();
 
             if (handle.IsInvalid)
@@ -69,6 +76,7 @@ public class DiskWriter : IDiskWriter
                 throw new IOException($"Failed to open disk for write: {diskPath}. Error: {win32}");
             }
 
+            Log.Information("Successfully opened disk for write: {Path}", diskPath);
             return new DiskWriteHandle(handle, diskPath);
         }, cancellationToken);
     }
@@ -108,11 +116,31 @@ public class DiskWriter : IDiskWriter
             if (!DiskApi.WriteFile(handle.Handle, buffer, (uint)bytesToWrite, out uint bytesWritten, IntPtr.Zero))
             {
                 int error = Marshal.GetLastWin32Error();
-                throw new IOException($"Failed to write sectors. Error: {error}");
+                string errorMsg = GetFriendlyErrorMessage(error, "write to disk");
+                throw new IOException(errorMsg);
             }
 
             if (bytesWritten != bytesToWrite)
                 throw new IOException($"Partial write: expected {bytesToWrite}, wrote {bytesWritten}");
         }, cancellationToken);
+    }
+
+    private static string GetFriendlyErrorMessage(int errorCode, string operation)
+    {
+        return errorCode switch
+        {
+            5 => $"Access denied when trying to {operation}. The disk may be in use by Windows. Try:\n" +
+                 "1. Close any programs accessing the disk\n" +
+                 "2. Unmount any volumes on the target disk\n" +
+                 "3. Take the disk offline in Disk Management (Win+X -> Disk Management)\n" +
+                 "4. Ensure you are running as Administrator",
+            19 => $"The disk is write-protected. The media may have a write-protection switch, or Windows is preventing writes " +
+                  $"because volumes are still mounted. Ensure all volumes are dismounted and try again.",
+            32 => $"The disk is locked by another process. Close any programs accessing the disk and try again.",
+            33 => $"The disk is being used by another process. Close any programs accessing the disk and try again.",
+            112 => $"Insufficient disk space to {operation}.",
+            1 => $"Invalid function when trying to {operation}. The disk may not support this operation.",
+            _ => $"Failed to {operation}. Windows error code: {errorCode}"
+        };
     }
 }

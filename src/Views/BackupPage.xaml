@@ -5,6 +5,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:Chronos.App.Views"
     mc:Ignorable="d">
 
     <ScrollViewer Padding="24,20,24,20"
@@ -37,10 +38,13 @@
                               SelectedItem="{Binding SelectedDisk, Mode=TwoWay}"
                               PlaceholderText="Select a disk..." />
 
-                    <ComboBox x:Name="PartitionCombo" Header="Partition (optional)" HorizontalAlignment="Stretch"
+                    <!-- Disk partition map -->
+                    <local:DiskMapControl x:Name="SourceDiskMap" Margin="0,4,0,0" />
+
+                    <ComboBox x:Name="PartitionCombo" Header="Partition" HorizontalAlignment="Stretch"
                               ItemsSource="{Binding AvailablePartitions}"
                               SelectedItem="{Binding SelectedPartition, Mode=TwoWay}"
-                              PlaceholderText="Entire disk"
+                              PlaceholderText="Select a partition..."
                               IsEnabled="{Binding HasPartitions}" />
                 </StackPanel>
             </StackPanel>
@@ -78,24 +82,6 @@
                             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1" CornerRadius="8" Padding="20">
-
-                    <ComboBox Header="Backup type" SelectedIndex="0" HorizontalAlignment="Stretch">
-                        <ComboBoxItem Content="Full Disk" />
-                        <ComboBoxItem Content="Partition" />
-                        <ComboBoxItem Content="Disk Clone" />
-                        <ComboBoxItem Content="Partition Clone" />
-                    </ComboBox>
-
-                    <StackPanel>
-                        <TextBlock Text="Compression level (Zstandard)" Margin="0,0,0,4" />
-                        <Slider x:Name="CompressionSlider" Minimum="1" Maximum="19" Value="3"
-                                StepFrequency="1" TickFrequency="1" SnapsTo="Ticks" />
-                        <TextBlock Opacity="0.5" FontSize="12">
-                            <Run Text="Level:" />
-                            <Run Text="{Binding Value, ElementName=CompressionSlider}" />
-                            <Run Text="— Lower = faster, Higher = smaller file" />
-                        </TextBlock>
-                    </StackPanel>
 
                     <ToggleSwitch Header="Use Volume Shadow Copy (VSS)" IsOn="True"
                                   OnContent="Enabled — consistent snapshot" OffContent="Disabled" />

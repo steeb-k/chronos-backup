@@ -6,6 +6,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:converters="using:Chronos.App.Converters"
+    xmlns:local="using:Chronos.App.Views"
     mc:Ignorable="d">
 
     <Page.Resources>
@@ -43,6 +44,9 @@
                         <Button Grid.Column="1" Content="Browse..." VerticalAlignment="Bottom" Margin="8,0,0,0"
                                 Click="OnBrowseImageClick" />
                     </Grid>
+
+                    <!-- Source image partition map (from sidecar) -->
+                    <local:DiskMapControl x:Name="SourceDiskMap" Margin="0,4,0,0" />
                 </StackPanel>
             </StackPanel>
 

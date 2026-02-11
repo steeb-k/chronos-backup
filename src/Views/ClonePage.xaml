@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<Page
+    x:Class="Chronos.App.Views.ClonePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:local="using:Chronos.App.Views"
+    xmlns:converters="using:Chronos.App.Converters"
+    mc:Ignorable="d">
+
+    <Page.Resources>
+        <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+    </Page.Resources>
+
+    <ScrollViewer Padding="24,20,24,20"
+                   HorizontalScrollBarVisibility="Disabled"
+                   HorizontalAlignment="Stretch">
+        <StackPanel Spacing="24" HorizontalAlignment="Stretch">
+
+            <!-- Header -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="Clone" Style="{StaticResource TitleTextBlockStyle}" />
+                <TextBlock Text="Clone a disk or partition directly to another disk or partition."
+                           Style="{StaticResource BodyTextBlockStyle}" Opacity="0.7" />
+            </StackPanel>
+
+            <!-- Source Selection -->
+            <StackPanel Spacing="12">
+                <TextBlock Text="SOURCE" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
+                           CharacterSpacing="80" />
+                <StackPanel Spacing="8"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="20">
+
+                    <ComboBox Header="Disk" HorizontalAlignment="Stretch"
+                              ItemsSource="{Binding AvailableDisks}"
+                              SelectedItem="{Binding SelectedDisk, Mode=TwoWay}"
+                              PlaceholderText="Select a disk..." />
+
+                    <local:DiskMapControl x:Name="SourceDiskMap" Margin="0,4,0,0" />
+
+                    <ComboBox Header="Partition" HorizontalAlignment="Stretch"
+                              ItemsSource="{Binding AvailablePartitions}"
+                              SelectedItem="{Binding SelectedPartition, Mode=TwoWay}"
+                              IsEnabled="{Binding HasPartitions}" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Destination Selection -->
+            <StackPanel Spacing="12">
+                <TextBlock Text="DESTINATION" FontWeight="SemiBold" FontSize="12" Opacity="0.5"
+                           CharacterSpacing="80" />
+                <StackPanel Spacing="8"
+                            Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1" CornerRadius="8" Padding="20">
+
+                    <InfoBar IsOpen="True" IsClosable="False" Severity="Warning"
+                             Title="All data on the destination will be overwritten!"
+                             Message="Double-check you have selected the correct destination." />
+
+                    <ComboBox Header="Disk" HorizontalAlignment="Stretch"
+                              ItemsSource="{Binding AvailableDestinationDisks}"
+                              SelectedItem="{Binding SelectedDestinationDisk, Mode=TwoWay}"
+                              PlaceholderText="Select destination disk..." />
+
+                    <local:DiskMapControl x:Name="DestDiskMap" Margin="0,4,0,0" />
+
+                    <ComboBox Header="Target partition" HorizontalAlignment="Stretch"
+                              ItemsSource="{Binding AvailableDestinationPartitions}"
+                              SelectedItem="{Binding SelectedDestinationPartition, Mode=TwoWay}"
+                              IsEnabled="{Binding HasDestinationPartitions}"
+                              Visibility="{Binding IsPartitionClone, Converter={StaticResource BoolToVisibilityConverter}}" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- Progress -->
+            <StackPanel Spacing="8"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1" CornerRadius="8" Padding="20">
+                <TextBlock Text="Clone Progress" FontWeight="SemiBold" />
+                <ProgressBar Minimum="0" Maximum="100" Value="{Binding ProgressPercentage}" />
+                <Grid>
+                    <TextBlock Text="{Binding StatusMessage}" Opacity="0.6" />
+                    <TextBlock Text="{Binding ProgressText}" HorizontalAlignment="Right" Opacity="0.6" />
+                </Grid>
+            </StackPanel>
+
+            <!-- Action Buttons -->
+            <Grid Margin="0,8,0,24">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Button Style="{StaticResource AccentButtonStyle}"
+                        Content="Start Clone" Padding="24,10"
+                        IsEnabled="{Binding CanStartClone}"
+                        Command="{Binding StartCloneCommand}" />
+                <Button Grid.Column="1" Content="Cancel" Padding="24,10" Margin="8,0,0,0"
+                        IsEnabled="{Binding IsCloneInProgress}"
+                        Command="{Binding CancelCloneCommand}" />
+            </Grid>
+
+        </StackPanel>
+    </ScrollViewer>
+</Page>

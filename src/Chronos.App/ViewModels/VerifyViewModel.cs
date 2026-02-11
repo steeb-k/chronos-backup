@@ -1,7 +1,9 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Chronos.Core.Imaging;
+using Chronos.Core.Models;
 using Chronos.Core.Progress;
+using Serilog;
 
 namespace Chronos.App.ViewModels;
 
@@ -23,12 +25,20 @@ public partial class VerifyViewModel : ObservableObject
     [ObservableProperty] public partial bool IsVerifyResultVisible { get; set; }
     [ObservableProperty] public partial bool IsHashOutputVisible { get; set; }
 
+    // Source image sidecar data for disk map display
+    [ObservableProperty] public partial DiskInfo? SourceDisk { get; set; }
+    [ObservableProperty] public partial List<PartitionInfo>? SourcePartitions { get; set; }
+
     public VerifyViewModel(IVerificationEngine? verificationEngine = null)
     {
         _verificationEngine = verificationEngine;
     }
 
-    partial void OnImagePathChanged(string value) => NotifyCommandsCanExecute();
+    partial void OnImagePathChanged(string value)
+    {
+        NotifyCommandsCanExecute();
+        _ = LoadSourceSidecarAsync(value);
+    }
     partial void OnIsVerificationInProgressChanged(bool value) => NotifyCommandsCanExecute();
     partial void OnIsHashInProgressChanged(bool value) => NotifyCommandsCanExecute();
 
@@ -120,5 +130,38 @@ public partial class VerifyViewModel : ObservableObject
         public VerificationProgressReporter(IProgress<OperationProgress> progress) => _progress = progress;
 
         public void Report(OperationProgress progress) => _progress.Report(progress);
+    }
+
+    private async Task LoadSourceSidecarAsync(string imagePath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath))
+        {
+            SourceDisk = null;
+            SourcePartitions = null;
+            return;
+        }
+
+        try
+        {
+            var sidecar = await ImageSidecar.LoadAsync(imagePath);
+            if (sidecar is not null)
+            {
+                var (disk, parts) = sidecar.ToDiskAndPartitions();
+                SourceDisk = disk;
+                SourcePartitions = parts;
+                Log.Debug("Verify: Loaded sidecar for {Path}: {Count} partitions", imagePath, parts.Count);
+            }
+            else
+            {
+                SourceDisk = null;
+                SourcePartitions = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Verify: Failed to load sidecar for {Path}", imagePath);
+            SourceDisk = null;
+            SourcePartitions = null;
+        }
     }
 }

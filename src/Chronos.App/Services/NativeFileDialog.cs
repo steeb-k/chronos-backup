@@ -102,6 +102,27 @@ internal static class NativeFileDialog
         return true;
     }
 
+    public static bool TryPickFolder(IntPtr owner, out string? path)
+    {
+        path = null;
+        var clsid = CLSID_FileOpenDialog;
+        var iid = IID_IFileDialog;
+
+        int hr = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iid, out var obj);
+        if (hr != 0) return false;
+
+        var dialog = (IFileDialog)obj;
+        dialog.SetOptions(FOS.FORCEFILESYSTEM | FOS.PICKFOLDERS | FOS.PATHMUSTEXIST | FOS.NOCHANGEDIR);
+
+        hr = dialog.Show(owner);
+        if (hr != 0) return false;
+
+        dialog.GetResult(out var item);
+        item.GetDisplayName(SIGDN_FILESYSPATH, out var resultPath);
+        path = resultPath;
+        return true;
+    }
+
     public static bool TryPickSaveFile(IntPtr owner, string filter, string defaultExt, string suggestedFileName, out string? path)
     {
         path = null;

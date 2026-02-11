@@ -122,6 +122,9 @@ public class BackupEngine : IBackupEngine
                 await CopyToFileAsync(sourceHandle, sourceSize, job, progressReporter, ct).ConfigureAwait(false);
             }
 
+            // Save sidecar metadata alongside the image
+            await SaveSidecarAsync(diskNumber, job.DestinationPath).ConfigureAwait(false);
+
             progressReporter?.Report(new OperationProgress
             {
                 StatusMessage = "Backup completed successfully",
@@ -232,6 +235,33 @@ public class BackupEngine : IBackupEngine
                 return (diskNum, partNum);
         }
         throw new InvalidOperationException($"Unsupported source path: {sourcePath}");
+    }
+
+    /// <summary>
+    /// Saves a sidecar JSON file alongside the image with disk/partition metadata
+    /// so the restore UI can display a disk map without mounting the image.
+    /// </summary>
+    private async Task SaveSidecarAsync(uint diskNumber, string destinationPath)
+    {
+        try
+        {
+            var disk = await _diskEnumerator.GetDiskAsync(diskNumber).ConfigureAwait(false);
+            var partitions = await _diskEnumerator.GetPartitionsAsync(diskNumber).ConfigureAwait(false);
+
+            if (disk is null)
+            {
+                Log.Warning("Cannot save sidecar: disk {Disk} not found", diskNumber);
+                return;
+            }
+
+            var sidecar = ImageSidecar.FromDisk(disk, partitions);
+            await sidecar.SaveAsync(destinationPath).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Non-fatal — the backup itself succeeded
+            Log.Warning(ex, "Failed to save image sidecar for {Path}", destinationPath);
+        }
     }
 
     private async Task CopyToVhdxAsync(
@@ -371,10 +401,23 @@ public class BackupEngine : IBackupEngine
             var volumePath = part?.VolumePath;
             if (IsVolumeSameAsDestination(volumePath, destinationPath))
                 volumePath = null;
-            var pathForQuery = volumePath != null && snapshotSet != null ? snapshotSet.GetSnapshotPath(volumePath) ?? volumePath : volumePath;
+            if (volumePath is null)
+                return null; // No volume path — fall back to full copy
+            var pathForQuery = snapshotSet != null ? snapshotSet.GetSnapshotPath(volumePath) ?? volumePath : volumePath;
             var ranges = await _allocatedRangesProvider.GetAllocatedRangesAsync(pathForQuery, sourceSize, ct).ConfigureAwait(false);
             if (ranges is null || ranges.Count == 0)
                 return null;
+
+            // Sanity check: if allocated ranges total exceeds source partition size,
+            // the volume path is probably wrong (WMI returned the wrong drive letter).
+            long totalAllocated = ranges.Sum(r => r.Length);
+            if (totalAllocated > (long)sourceSize)
+            {
+                Log.Warning("BuildCopyRanges: allocated ranges total ({Total}) exceeds source size ({Source}) — volume path {Path} is likely wrong, falling back to full copy",
+                    totalAllocated, sourceSize, volumePath);
+                return null;
+            }
+
             return ranges.Select(r => (r.Offset, r.Length)).ToList();
         }
 
@@ -417,9 +460,20 @@ public class BackupEngine : IBackupEngine
             }
             else
             {
-                foreach (var r in allocRanges)
+                // Sanity check: if ranges total exceeds partition size, volume path was wrong
+                long rangeTotal = allocRanges.Sum(r => r.Length);
+                if (rangeTotal > (long)part.Size)
                 {
-                    result.Add(((long)part.Offset + r.Offset, r.Length));
+                    Log.Warning("BuildCopyRanges: partition {Num} ranges total ({Total}) exceeds size ({Size}) — wrong VolumePath {Path}, using full partition",
+                        part.PartitionNumber, rangeTotal, part.Size, volumePath);
+                    result.Add(((long)part.Offset, (long)part.Size));
+                }
+                else
+                {
+                    foreach (var r in allocRanges)
+                    {
+                        result.Add(((long)part.Offset + r.Offset, r.Length));
+                    }
                 }
             }
         }

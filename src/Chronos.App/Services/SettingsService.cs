@@ -1,4 +1,5 @@
-using Windows.Storage;
+using System.Text.Json;
+using Serilog;
 
 namespace Chronos.App.Services;
 
@@ -38,65 +39,87 @@ public interface ISettingsService
     bool VerifyByDefault { get; set; }
 
     /// <summary>
-    /// Gets or sets whether to use dark theme.
+    /// Gets or sets the theme mode: 0 = System, 1 = Light, 2 = Dark.
     /// </summary>
-    bool UseDarkTheme { get; set; }
+    int ThemeMode { get; set; }
 }
 
 /// <summary>
-/// Implementation of settings service using ApplicationData.LocalSettings.
+/// Implementation of settings service using a JSON file in the local app data folder.
+/// Works for both packaged and unpackaged WinUI 3 apps.
 /// </summary>
 public class SettingsService : ISettingsService
 {
-    private readonly ApplicationDataContainer _localSettings;
+    private static readonly string SettingsDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Chronos");
 
-    private const string KeyDefaultCompressionLevel = "DefaultCompressionLevel";
-    private const string KeyDefaultBackupPath = "DefaultBackupPath";
-    private const string KeyUseVssByDefault = "UseVssByDefault";
-    private const string KeyVerifyByDefault = "VerifyByDefault";
-    private const string KeyUseDarkTheme = "UseDarkTheme";
+    private static readonly string SettingsPath = Path.Combine(SettingsDir, "settings.json");
 
     public int DefaultCompressionLevel { get; set; } = 3;
     public string DefaultBackupPath { get; set; } = string.Empty;
     public bool UseVssByDefault { get; set; } = true;
     public bool VerifyByDefault { get; set; } = true;
-    public bool UseDarkTheme { get; set; } = true;
+    public int ThemeMode { get; set; } = 0; // 0=System
 
     public SettingsService()
     {
-        _localSettings = ApplicationData.Current.LocalSettings;
         LoadSettings();
     }
 
     public void LoadSettings()
     {
-        DefaultCompressionLevel = GetValue(KeyDefaultCompressionLevel, 3);
-        DefaultBackupPath = GetValue(KeyDefaultBackupPath, string.Empty);
-        UseVssByDefault = GetValue(KeyUseVssByDefault, true);
-        VerifyByDefault = GetValue(KeyVerifyByDefault, true);
-        UseDarkTheme = GetValue(KeyUseDarkTheme, true);
+        try
+        {
+            if (!File.Exists(SettingsPath))
+                return;
+
+            var json = File.ReadAllText(SettingsPath);
+            var data = JsonSerializer.Deserialize<SettingsData>(json);
+            if (data is null) return;
+
+            DefaultCompressionLevel = data.DefaultCompressionLevel;
+            DefaultBackupPath = data.DefaultBackupPath ?? string.Empty;
+            UseVssByDefault = data.UseVssByDefault;
+            VerifyByDefault = data.VerifyByDefault;
+            ThemeMode = data.ThemeMode;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to load settings from {Path}", SettingsPath);
+        }
     }
 
     public void SaveSettings()
     {
-        SetValue(KeyDefaultCompressionLevel, DefaultCompressionLevel);
-        SetValue(KeyDefaultBackupPath, DefaultBackupPath);
-        SetValue(KeyUseVssByDefault, UseVssByDefault);
-        SetValue(KeyVerifyByDefault, VerifyByDefault);
-        SetValue(KeyUseDarkTheme, UseDarkTheme);
-    }
-
-    private T GetValue<T>(string key, T defaultValue)
-    {
-        if (_localSettings.Values.TryGetValue(key, out var value) && value is T typedValue)
+        try
         {
-            return typedValue;
+            Directory.CreateDirectory(SettingsDir);
+
+            var data = new SettingsData
+            {
+                DefaultCompressionLevel = DefaultCompressionLevel,
+                DefaultBackupPath = DefaultBackupPath,
+                UseVssByDefault = UseVssByDefault,
+                VerifyByDefault = VerifyByDefault,
+                ThemeMode = ThemeMode
+            };
+
+            var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(SettingsPath, json);
         }
-        return defaultValue;
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to save settings to {Path}", SettingsPath);
+        }
     }
 
-    private void SetValue<T>(string key, T value)
+    private sealed class SettingsData
     {
-        _localSettings.Values[key] = value;
+        public int DefaultCompressionLevel { get; set; } = 3;
+        public string? DefaultBackupPath { get; set; }
+        public bool UseVssByDefault { get; set; } = true;
+        public bool VerifyByDefault { get; set; } = true;
+        public int ThemeMode { get; set; } = 0;
     }
 }

@@ -1,8 +1,9 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Chronos.Core.VirtualDisk;
-using Windows.Storage.Pickers;
-using WinRT.Interop;
+using Chronos.Core.Models;
+using Chronos.Core.Imaging;
+using Serilog;
 
 namespace Chronos.App.ViewModels;
 
@@ -16,35 +17,44 @@ public partial class BrowseViewModel : ObservableObject
     [ObservableProperty] public partial string? MountedFolderPath { get; set; }
     [ObservableProperty] public partial bool MountReadOnly { get; set; } = true;
     [ObservableProperty] public partial string StatusMessage { get; set; } = string.Empty;
-    [ObservableProperty] public partial string ExtractionDestination { get; set; } = string.Empty;
+
+    // Source image sidecar data for disk map display
+    [ObservableProperty] public partial DiskInfo? SourceDisk { get; set; }
+    [ObservableProperty] public partial List<PartitionInfo>? SourcePartitions { get; set; }
+
+    public bool CanMount => !string.IsNullOrWhiteSpace(ImagePath) && !IsMounted;
+    public bool CanDismount => IsMounted;
+    public bool CanOpenExplorer => IsMounted && MountedDriveLetter is not null;
 
     public BrowseViewModel(IVirtualDiskService? virtualDiskService = null)
     {
         _virtualDiskService = virtualDiskService;
     }
 
-    [RelayCommand]
-    private async Task BrowseImageAsync()
+    partial void OnImagePathChanged(string value)
     {
-        var file = await App.RunOnUIThreadAsync(async () =>
-        {
-            var picker = new FileOpenPicker();
-            picker.FileTypeFilter.Add(".vhdx");
-            picker.FileTypeFilter.Add(".vhd");
-            picker.FileTypeFilter.Add(".img");
-
-            InitializeWithWindow.Initialize(picker, App.MainWindowHandle);
-            return await picker.PickSingleFileAsync();
-        });
-
-        if (file is not null)
-        {
-            ImagePath = file.Path;
-            StatusMessage = $"Selected image: {file.Name}";
-        }
+        OnPropertyChanged(nameof(CanMount));
+        MountToDriveLetterCommand.NotifyCanExecuteChanged();
+        _ = LoadSourceSidecarAsync(value);
     }
 
-    [RelayCommand]
+    partial void OnIsMountedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanMount));
+        OnPropertyChanged(nameof(CanDismount));
+        OnPropertyChanged(nameof(CanOpenExplorer));
+        MountToDriveLetterCommand.NotifyCanExecuteChanged();
+        DismountCommand.NotifyCanExecuteChanged();
+        OpenInExplorerCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnMountedDriveLetterChanged(char? value)
+    {
+        OnPropertyChanged(nameof(CanOpenExplorer));
+        OpenInExplorerCommand.NotifyCanExecuteChanged();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanMount))]
     private async Task MountToDriveLetterAsync()
     {
         if (_virtualDiskService is null)
@@ -56,12 +66,6 @@ public partial class BrowseViewModel : ObservableObject
         if (string.IsNullOrEmpty(ImagePath))
         {
             StatusMessage = "Please select an image first";
-            return;
-        }
-
-        if (IsMounted)
-        {
-            StatusMessage = "Image is already mounted";
             return;
         }
 
@@ -80,48 +84,7 @@ public partial class BrowseViewModel : ObservableObject
         }
     }
 
-    [RelayCommand]
-    private async Task MountToFolderAsync()
-    {
-        if (_virtualDiskService is null)
-        {
-            StatusMessage = "Virtual disk service not available";
-            return;
-        }
-
-        if (string.IsNullOrEmpty(ImagePath))
-        {
-            StatusMessage = "Please select an image first";
-            return;
-        }
-
-        var folder = await App.RunOnUIThreadAsync(async () =>
-        {
-            var picker = new FolderPicker();
-            picker.FileTypeFilter.Add("*");
-            InitializeWithWindow.Initialize(picker, App.MainWindowHandle);
-            return await picker.PickSingleFolderAsync();
-        });
-
-        if (folder is null)
-            return;
-
-        try
-        {
-            StatusMessage = "Mounting image to folder...";
-            await _virtualDiskService.MountToFolderAsync(ImagePath, folder.Path, MountReadOnly);
-            
-            MountedFolderPath = folder.Path;
-            IsMounted = true;
-            StatusMessage = $"Mounted to folder: {folder.Path}";
-        }
-        catch (Exception ex)
-        {
-            StatusMessage = $"Failed to mount: {ex.Message}";
-        }
-    }
-
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDismount))]
     private async Task DismountAsync()
     {
         if (_virtualDiskService is null)
@@ -152,67 +115,55 @@ public partial class BrowseViewModel : ObservableObject
         }
     }
 
-    [RelayCommand]
-    private async Task ExtractFilesAsync()
+    [RelayCommand(CanExecute = nameof(CanOpenExplorer))]
+    private void OpenInExplorer()
     {
-        if (!IsMounted || MountedDriveLetter is null)
-        {
-            StatusMessage = "Please mount the image first";
-            return;
-        }
-
-        var folder = await App.RunOnUIThreadAsync(async () =>
-        {
-            var picker = new FolderPicker();
-            picker.FileTypeFilter.Add("*");
-            InitializeWithWindow.Initialize(picker, App.MainWindowHandle);
-            return await picker.PickSingleFolderAsync();
-        });
-
-        if (folder is null)
-            return;
+        if (MountedDriveLetter is null) return;
 
         try
         {
-            StatusMessage = "Extracting files...";
-            ExtractionDestination = folder.Path;
-
-            // Copy all files from mounted drive to destination
-            string sourcePath = $"{MountedDriveLetter}:\\";
-            await CopyDirectoryAsync(sourcePath, folder.Path);
-
-            StatusMessage = $"Files extracted successfully to {folder.Path}";
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = $"{MountedDriveLetter}:\\",
+                UseShellExecute = true
+            });
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Failed to extract files: {ex.Message}";
+            StatusMessage = $"Failed to open Explorer: {ex.Message}";
         }
     }
 
-    private async Task CopyDirectoryAsync(string sourceDir, string destDir)
+    private async Task LoadSourceSidecarAsync(string imagePath)
     {
-        await Task.Run(() =>
+        if (string.IsNullOrWhiteSpace(imagePath))
         {
-            if (!Directory.Exists(destDir))
-            {
-                Directory.CreateDirectory(destDir);
-            }
+            SourceDisk = null;
+            SourcePartitions = null;
+            return;
+        }
 
-            var files = Directory.GetFiles(sourceDir);
-            foreach (var file in files)
+        try
+        {
+            var sidecar = await ImageSidecar.LoadAsync(imagePath);
+            if (sidecar is not null)
             {
-                var fileName = Path.GetFileName(file);
-                var destFile = Path.Combine(destDir, fileName);
-                File.Copy(file, destFile, overwrite: true);
+                var (disk, parts) = sidecar.ToDiskAndPartitions();
+                SourceDisk = disk;
+                SourcePartitions = parts;
+                Log.Debug("Browse: Loaded sidecar for {Path}: {Count} partitions", imagePath, parts.Count);
             }
-
-            var dirs = Directory.GetDirectories(sourceDir);
-            foreach (var dir in dirs)
+            else
             {
-                var dirName = Path.GetFileName(dir);
-                var destSubDir = Path.Combine(destDir, dirName);
-                CopyDirectoryAsync(dir, destSubDir).GetAwaiter().GetResult();
+                SourceDisk = null;
+                SourcePartitions = null;
             }
-        });
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Browse: Failed to load sidecar for {Path}", imagePath);
+            SourceDisk = null;
+            SourcePartitions = null;
+        }
     }
 }

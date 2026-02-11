@@ -34,17 +34,23 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBox Header="Default backup folder" PlaceholderText="C:\Backups" />
-                        <Button Grid.Column="1" Content="Browse..." VerticalAlignment="Bottom" Margin="8,0,0,0" />
+                        <TextBox Header="Default backup folder" PlaceholderText="C:\Backups"
+                                 Text="{Binding DefaultBackupPath, Mode=TwoWay}" />
+                        <Button Grid.Column="1" Content="Browse..." VerticalAlignment="Bottom" Margin="8,0,0,0"
+                                Click="OnBrowseBackupFolderClick" />
                     </Grid>
 
                     <StackPanel>
                         <TextBlock Text="Default compression level" Margin="0,0,0,4" />
-                        <Slider Minimum="1" Maximum="19" Value="3" StepFrequency="1" TickFrequency="1" SnapsTo="Ticks" />
+                        <Slider Minimum="1" Maximum="19"
+                                Value="{Binding DefaultCompressionLevel, Mode=TwoWay}"
+                                StepFrequency="1" TickFrequency="1" SnapsTo="Ticks" />
                     </StackPanel>
 
-                    <ToggleSwitch Header="Use VSS by default" IsOn="True" />
-                    <ToggleSwitch Header="Verify after backup by default" IsOn="True" />
+                    <ToggleSwitch Header="Use VSS by default"
+                                  IsOn="{Binding UseVssByDefault, Mode=TwoWay}" />
+                    <ToggleSwitch Header="Verify after backup by default"
+                                  IsOn="{Binding VerifyByDefault, Mode=TwoWay}" />
                 </StackPanel>
             </StackPanel>
 
@@ -58,8 +64,9 @@
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1" CornerRadius="8" Padding="20">
 
-                    <RadioButtons Header="Theme">
-                        <RadioButton Content="Use system setting" IsChecked="True" />
+                    <RadioButtons Header="Theme" x:Name="ThemeRadioButtons"
+                                  SelectedIndex="{Binding ThemeMode, Mode=TwoWay}">
+                        <RadioButton Content="Use system setting" />
                         <RadioButton Content="Light" />
                         <RadioButton Content="Dark" />
                     </RadioButtons>
