@@ -329,7 +329,7 @@ public class BackupEngine : IBackupEngine
                     }
                 }
 
-                var ranges = await BuildCopyRangesAsync(diskNumber, partitionNumber, sourceSize, job.DestinationPath, snapshotSet, ct).ConfigureAwait(false);
+                var ranges = await BuildCopyRangesAsync(diskNumber, partitionNumber, sourceSize, job.DestinationPath, snapshotSet, sourceHandle.SectorSize, ct).ConfigureAwait(false);
                 if (ranges is not null)
                 {
                     Log.Debug("CopyToVhdx: using allocated-ranges optimization ({RangeCount} ranges)", ranges.Count);
@@ -392,7 +392,7 @@ public class BackupEngine : IBackupEngine
     /// Builds the list of byte ranges to copy. Uses NTFS allocated ranges when available.
     /// Returns null to fall back to full linear copy.
     /// </summary>
-    private async Task<List<(long Offset, long Length)>?> BuildCopyRangesAsync(uint diskNumber, uint? partitionNumber, ulong sourceSize, string destinationPath, IVssSnapshotSet? snapshotSet, CancellationToken ct)
+    private async Task<List<(long Offset, long Length)>?> BuildCopyRangesAsync(uint diskNumber, uint? partitionNumber, ulong sourceSize, string destinationPath, IVssSnapshotSet? snapshotSet, uint sectorSize, CancellationToken ct)
     {
         if (partitionNumber.HasValue)
         {
@@ -431,7 +431,7 @@ public class BackupEngine : IBackupEngine
 
         // Always include partition table: sector 0 (MBR) + sectors 1-33 (GPT header/entries).
         // Without this, the VHD appears "not initialized" with no partition data.
-        const int sectorSize = 512;
+        // Use actual sector size from source disk (ARM64 often has 4K sectors).
         const int gptSectors = 34; // MBR + GPT header + partition array
         long gptSize = gptSectors * sectorSize;
         result.Add((0, Math.Min(gptSize, (long)sourceSize)));

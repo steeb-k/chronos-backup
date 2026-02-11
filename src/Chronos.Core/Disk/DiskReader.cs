@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 using Chronos.Native.Win32;
+using Chronos.Native.Structures;
 using Serilog;
 
 namespace Chronos.Core.Disk;
@@ -86,8 +87,10 @@ public class DiskReader : IDiskReader
 
             var diskHandle = new DiskReadHandle(handle, diskPath);
 
-            // Query disk size
+            // Query disk size and sector size
             diskHandle.SizeBytes = QueryDiskSize(handle);
+            diskHandle.SectorSize = QuerySectorSize(handle);
+            Log.Debug("Disk opened: {Path}, Size={Size}, SectorSize={SectorSize}", diskPath, diskHandle.SizeBytes, diskHandle.SectorSize);
 
             return diskHandle;
         }, cancellationToken);
@@ -123,6 +126,8 @@ public class DiskReader : IDiskReader
 
             var diskHandle = new DiskReadHandle(handle, successPath);
             diskHandle.SizeBytes = QueryDiskSize(handle);
+            diskHandle.SectorSize = QuerySectorSize(handle);
+            Log.Debug("Partition opened: {Path}, Size={Size}, SectorSize={SectorSize}", successPath, diskHandle.SizeBytes, diskHandle.SectorSize);
 
             return diskHandle;
         }, cancellationToken);
@@ -197,5 +202,37 @@ public class DiskReader : IDiskReader
 
         // Fallback: return 0 if we can't get size
         return 0;
+    }
+
+    private uint QuerySectorSize(SafeFileHandle handle)
+    {
+        // Allocate buffer for DISK_GEOMETRY_EX
+        int bufferSize = Marshal.SizeOf<NativeStructures.DISK_GEOMETRY_EX>();
+        IntPtr buffer = Marshal.AllocHGlobal(bufferSize);
+        try
+        {
+            if (DiskApi.DeviceIoControl(
+                handle,
+                DiskApi.IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+                IntPtr.Zero,
+                0,
+                buffer,
+                (uint)bufferSize,
+                out _,
+                IntPtr.Zero))
+            {
+                var geometry = Marshal.PtrToStructure<NativeStructures.DISK_GEOMETRY_EX>(buffer);
+                uint sectorSize = geometry.Geometry.BytesPerSector;
+                if (sectorSize > 0)
+                    return sectorSize;
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+
+        // Fallback: return 512 if we can't query sector size
+        return 512;
     }
 }
