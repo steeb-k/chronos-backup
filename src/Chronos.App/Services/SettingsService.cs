@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Chronos.Common.Helpers;
 using Serilog;
 
 namespace Chronos.App.Services;
@@ -50,10 +51,7 @@ public interface ISettingsService
 /// </summary>
 public class SettingsService : ISettingsService
 {
-    private static readonly string SettingsDir = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Chronos");
-
+    private static readonly string SettingsDir = PeEnvironment.GetAppDataDirectory();
     private static readonly string SettingsPath = Path.Combine(SettingsDir, "settings.json");
 
     public int DefaultCompressionLevel { get; set; } = 3;

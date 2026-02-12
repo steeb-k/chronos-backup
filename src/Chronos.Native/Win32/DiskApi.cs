@@ -197,4 +197,76 @@ public static partial class DiskApi
             FILE_ATTRIBUTE_NORMAL,
             IntPtr.Zero);
     }
+
+    /// <summary>
+    /// Gets disk geometry (size, bytes per sector, etc.) via IOCTL_DISK_GET_DRIVE_GEOMETRY_EX.
+    /// Returns null if the disk cannot be opened.
+    /// </summary>
+    public static DiskGeometryInfo? GetDiskGeometry(uint diskNumber)
+    {
+        string diskPath = $"\\\\.\\PhysicalDrive{diskNumber}";
+        using var handle = OpenDiskForRead(diskPath);
+        if (handle.IsInvalid)
+            return null;
+
+        // DISK_GEOMETRY_EX: DISK_GEOMETRY(24 bytes) + DiskSize(8) = 32 bytes minimum
+        int bufferSize = 256;
+        var buffer = Marshal.AllocHGlobal(bufferSize);
+        try
+        {
+            bool ok = DeviceIoControl(handle, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+                IntPtr.Zero, 0, buffer, (uint)bufferSize, out _, IntPtr.Zero);
+            if (!ok)
+                return null;
+
+            // DISK_GEOMETRY: Cylinders(8) + MediaType(4) + TracksPerCylinder(4) + SectorsPerTrack(4) + BytesPerSector(4) = 24
+            long cylinders = Marshal.ReadInt64(buffer, 0);
+            int mediaType = Marshal.ReadInt32(buffer, 8);
+            int tracksPerCylinder = Marshal.ReadInt32(buffer, 12);
+            int sectorsPerTrack = Marshal.ReadInt32(buffer, 16);
+            int bytesPerSector = Marshal.ReadInt32(buffer, 20);
+            long diskSize = Marshal.ReadInt64(buffer, 24);
+
+            return new DiskGeometryInfo
+            {
+                DiskSize = diskSize,
+                BytesPerSector = (uint)bytesPerSector,
+                MediaType = mediaType,
+            };
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    /// <summary>
+    /// Probes physical disk indices 0..maxIndex and returns which ones exist
+    /// (can be opened). This is a pure IOCTL approach that works without WMI.
+    /// </summary>
+    public static List<uint> ProbePhysicalDiskIndices(uint maxIndex = 31)
+    {
+        var result = new List<uint>();
+        for (uint i = 0; i <= maxIndex; i++)
+        {
+            string diskPath = $"\\\\.\\PhysicalDrive{i}";
+            using var handle = CreateFile(diskPath, GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+            if (!handle.IsInvalid)
+                result.Add(i);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Information from IOCTL_DISK_GET_DRIVE_GEOMETRY_EX.
+    /// </summary>
+    public struct DiskGeometryInfo
+    {
+        public long DiskSize;
+        public uint BytesPerSector;
+        /// <summary>MEDIA_TYPE enum value (11 = FixedMedia, 12 = RemovableMedia).</summary>
+        public int MediaType;
+    }
 }

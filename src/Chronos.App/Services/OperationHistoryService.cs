@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Chronos.Common.Helpers;
 using Chronos.Core.Models;
 using Microsoft.UI;
 using Microsoft.UI.Xaml;
@@ -81,10 +82,7 @@ public class OperationHistoryService : IOperationHistoryService
 
     public OperationHistoryService()
     {
-        var dataDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Chronos");
-        Directory.CreateDirectory(dataDir);
+        var dataDir = PeEnvironment.GetAppDataDirectory();
         _historyFilePath = Path.Combine(dataDir, "operation-history.json");
     }
 

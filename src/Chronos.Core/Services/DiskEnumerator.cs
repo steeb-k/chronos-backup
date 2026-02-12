@@ -1,4 +1,5 @@
 using Chronos.Core.Models;
+using Chronos.Common.Helpers;
 using Chronos.Native.Win32;
 using Serilog;
 using System.IO;
@@ -187,9 +188,11 @@ public class DiskEnumerator : IDiskEnumerator
                     }
                 }
             }
-            catch
+            catch (Exception wmiEx)
             {
-                // If WMI fails, return empty list
+                // WMI failed — fall back to IOCTL-only enumeration (critical for WinPE)
+                Log.Warning(wmiEx, "WMI disk enumeration failed; falling back to IOCTL probing");
+                disks = EnumerateDisksViaIoctl();
             }
 
             return disks;
@@ -265,9 +268,28 @@ public class DiskEnumerator : IDiskEnumerator
                     }
                 }
             }
-            catch
+            catch (Exception wmiEx)
             {
-                // If WMI fails, return empty list
+                // WMI partition enumeration failed — build from IOCTL drive layout only (WinPE fallback)
+                Log.Warning(wmiEx, "WMI partition enumeration failed for disk {Disk}; using IOCTL-only", diskNumber);
+                foreach (var entry in driveLayout)
+                {
+                    var partType = ClassifyGptTypeGuid(entry.GptTypeGuid);
+                    partitions.Add(new PartitionInfo
+                    {
+                        DiskNumber = diskNumber,
+                        PartitionNumber = entry.PartitionNumber,
+                        Size = (ulong)entry.PartitionLength,
+                        Offset = (ulong)entry.StartingOffset,
+                        PartitionType = partType,
+                        GptTypeGuid = entry.GptTypeGuid != Guid.Empty ? entry.GptTypeGuid : null,
+                    });
+                }
+
+                // Resolve volume GUID paths and enrich
+                ResolveVolumeGuidPaths(diskNumber, partitions);
+                EnrichPartitionsWithVolumeMetadata(partitions);
+                return partitions;
             }
 
             // Add partitions that IOCTL found but WMI skipped (e.g. MSR partitions).
@@ -505,9 +527,11 @@ public class DiskEnumerator : IDiskEnumerator
 
     /// <summary>
     /// Queries MSFT_Disk from the Storage WMI namespace to determine partition style.
+    /// Falls back to IOCTL drive layout heuristics if WMI is unavailable.
     /// </summary>
     private static DiskPartitionStyle GetPartitionStyle(uint diskNumber)
     {
+        // Try WMI first
         try
         {
             using var searcher = new System.Management.ManagementObjectSearcher(
@@ -526,14 +550,65 @@ public class DiskEnumerator : IDiskEnumerator
         }
         catch (Exception ex)
         {
-            Log.Debug("Failed to query partition style for disk {Disk}: {Error}", diskNumber, ex.Message);
+            Log.Debug("WMI partition style query failed for disk {Disk}: {Error}", diskNumber, ex.Message);
         }
+
+        // IOCTL fallback: the drive layout header contains partition style
+        try
+        {
+            var layout = DiskApi.GetDriveLayout(diskNumber);
+            // If any partition has a non-empty GPT type GUID, it's GPT
+            if (layout.Any(e => e.GptTypeGuid != Guid.Empty))
+                return DiskPartitionStyle.GPT;
+            if (layout.Count > 0)
+                return DiskPartitionStyle.MBR; // Has partitions but no GPT GUIDs → MBR
+        }
+        catch { }
+
         return DiskPartitionStyle.Unknown;
     }
 
     private static string EscapeWmiString(string value)
     {
         return value.Replace("\\", "\\\\").Replace("'", "\\'");
+    }
+
+    /// <summary>
+    /// IOCTL-only disk enumeration fallback for environments without WMI (e.g. WinPE).
+    /// Probes \\.\PhysicalDrive0 through \\.\PhysicalDrive31 and reads geometry via IOCTL.
+    /// </summary>
+    private static List<DiskInfo> EnumerateDisksViaIoctl()
+    {
+        var disks = new List<DiskInfo>();
+        var indices = DiskApi.ProbePhysicalDiskIndices();
+        Log.Information("IOCTL probe found {Count} physical disk(s): [{Indices}]",
+            indices.Count, string.Join(", ", indices));
+
+        foreach (var idx in indices)
+        {
+            var geo = DiskApi.GetDiskGeometry(idx);
+            if (geo is null) continue;
+
+            // Try to determine partition style from drive layout
+            var layout = DiskApi.GetDriveLayout(idx);
+            var style = DiskPartitionStyle.Unknown;
+            string model = $"Disk {idx}";
+
+            // Guess media type from MEDIA_TYPE
+            bool isRemovable = geo.Value.MediaType == 12; // RemovableMedia
+
+            disks.Add(new DiskInfo
+            {
+                DiskNumber = idx,
+                Manufacturer = "Unknown",
+                Model = model,
+                SerialNumber = "Unknown",
+                Size = (ulong)geo.Value.DiskSize,
+                PartitionStyle = style,
+            });
+        }
+
+        return disks;
     }
 
     /// <summary>

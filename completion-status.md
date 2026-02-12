@@ -115,17 +115,18 @@ Master checklist of all planned, in-progress, and completed features across all 
 - [ ] Parent VHDX protection (mark read-only after child is created)
 
 ### WinPE Compatibility (PhoenixPE)
-- [ ] Detect PE environment at startup
-- [ ] Self-contained .NET publish (or portable runtime bundling)
-- [ ] WinUI 3 / Windows App SDK runtime availability in PE (bundle or fallback)
-- [ ] Verify WMI providers work in PE (`Win32_DiskDrive`, `Win32_DiskPartition`, `Win32_Volume`)
-- [ ] Graceful handling of missing persistent storage (settings, history)
-- [ ] Graceful handling of missing network stack
-- [ ] Restore functional in PE
+- [x] Detect PE environment at startup (`PeEnvironment.IsWinPE`)
+- [x] Self-contained .NET publish (or portable runtime bundling) — already done via `WindowsAppSDKSelfContained`
+- [ ] WinUI 3 / Windows App SDK runtime availability in PE (bundle or fallback) — needs PE testing
+- [x] IOCTL-only disk enumeration fallback when WMI is unavailable
+- [x] Graceful handling of missing persistent storage (settings, history) — `PeEnvironment.GetAppDataDirectory()`
+- [x] Graceful handling of missing network stack (update checks skipped in PE)
+- [x] WinPE readiness diagnostic script (`scripts/Test-WinPE-Readiness.ps1`)
+- [ ] Restore functional in PE — needs PE testing
 - [ ] Partition manager functional in PE
-- [ ] Verify functional in PE
-- [ ] Browse / Mount functional in PE
-- [ ] Backup functional in PE (if target storage available)
+- [ ] Verify functional in PE — needs PE testing
+- [ ] Browse / Mount functional in PE — needs PE testing
+- [ ] Backup functional in PE (if target storage available) — needs PE testing
 
 ### Partition Manager
 *Detailed plan: `phase2-partitioning-plan.md`*

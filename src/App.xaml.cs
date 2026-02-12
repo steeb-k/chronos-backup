@@ -10,6 +10,7 @@ using Chronos.Core.VirtualDisk;
 using Chronos.Core.Compression;
 using Chronos.Core.Imaging;
 using Chronos.Core.VSS;
+using Chronos.Common.Helpers;
 
 namespace Chronos.App;
 
@@ -54,16 +55,21 @@ public partial class App : Application
 
     private static void ConfigureLogging()
     {
-        var logDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Chronos", "Logs");
+        var appDataDir = PeEnvironment.GetAppDataDirectory();
+        var logDir = Path.Combine(appDataDir, "Logs");
         Directory.CreateDirectory(logDir);
         var logPath = Path.Combine(logDir, "chronos-.log");
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Debug()
             .WriteTo.File(logPath, rollingInterval: RollingInterval.Day, retainedFileCountLimit: 7)
             .CreateLogger();
+
         Log.Information("Chronos started. Log file: {LogPath}", logPath);
+
+        if (PeEnvironment.IsWinPE)
+        {
+            Log.Information("WinPE environment detected. Capabilities: {Caps}", PeEnvironment.Capabilities);
+        }
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs e)
@@ -79,8 +85,11 @@ public partial class App : Application
         // Apply saved theme to the root element
         ApplyStartupTheme();
 
-        // Check for updates in the background after a short delay
-        _ = CheckForUpdatesOnStartupAsync();
+        // Skip update checks in PE environments (no network, no persistent install)
+        if (!PeEnvironment.IsWinPE)
+        {
+            _ = CheckForUpdatesOnStartupAsync();
+        }
     }
 
     private static async Task CheckForUpdatesOnStartupAsync()
