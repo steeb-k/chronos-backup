@@ -103,9 +103,9 @@ public static partial class DiskApi
     /// a list of (PartitionNumber, StartingOffset, PartitionLength) for all partitions.
     /// The PartitionNumber here matches the \\.\\.\Harddisk{N}Partition{M} device path.
     /// </summary>
-    public static List<(uint PartitionNumber, long StartingOffset, long PartitionLength)> GetDriveLayout(uint diskNumber)
+    public static List<DriveLayoutEntry> GetDriveLayout(uint diskNumber)
     {
-        var result = new List<(uint, long, long)>();
+        var result = new List<DriveLayoutEntry>();
         string diskPath = $"\\\\.\\PhysicalDrive{diskNumber}";
 
         using var handle = OpenDiskForRead(diskPath);
@@ -127,6 +127,8 @@ public static partial class DiskApi
             if (!ok)
                 return result;
 
+            // Header offset 0: PartitionStyle (0 = MBR, 1 = GPT)
+            int partitionStyle = Marshal.ReadInt32(buffer, 0);
             int partitionCount = Marshal.ReadInt32(buffer, 4);
 
             for (int i = 0; i < partitionCount && i < maxPartitions; i++)
@@ -137,8 +139,26 @@ public static partial class DiskApi
                 uint partitionNumber = (uint)Marshal.ReadInt32(buffer, offset + 24);
 
                 // PartitionNumber=0 means unused/empty entry, skip
-                if (partitionLength > 0 && partitionNumber > 0)
-                    result.Add((partitionNumber, startingOffset, partitionLength));
+                if (partitionLength <= 0 || partitionNumber <= 0)
+                    continue;
+
+                Guid gptTypeGuid = Guid.Empty;
+                if (partitionStyle == 1) // GPT
+                {
+                    // PARTITION_INFORMATION_GPT starts at offset+32 within the entry
+                    // PartitionType GUID is the first 16 bytes of the GPT union
+                    byte[] guidBytes = new byte[16];
+                    Marshal.Copy(buffer + offset + 32, guidBytes, 0, 16);
+                    gptTypeGuid = new Guid(guidBytes);
+                }
+
+                result.Add(new DriveLayoutEntry
+                {
+                    PartitionNumber = partitionNumber,
+                    StartingOffset = startingOffset,
+                    PartitionLength = partitionLength,
+                    GptTypeGuid = gptTypeGuid,
+                });
             }
         }
         finally
@@ -147,6 +167,18 @@ public static partial class DiskApi
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Represents a partition entry from IOCTL_DISK_GET_DRIVE_LAYOUT_EX.
+    /// </summary>
+    public struct DriveLayoutEntry
+    {
+        public uint PartitionNumber;
+        public long StartingOffset;
+        public long PartitionLength;
+        /// <summary>GPT partition type GUID (Guid.Empty for MBR disks).</summary>
+        public Guid GptTypeGuid;
     }
 
     /// <summary>

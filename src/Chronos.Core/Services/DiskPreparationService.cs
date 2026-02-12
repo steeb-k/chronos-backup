@@ -36,9 +36,18 @@ public interface IDiskPreparationService
     /// This will lock each volume, dismount it, and hold the lock so writes can proceed.
     /// </summary>
     /// <param name="diskNumber">The disk number (e.g., 0 for PhysicalDrive0).</param>
+    /// <param name="takeOffline">If true, the disk is taken offline to prevent Windows from re-mounting volumes.
+    /// Set to false for partition-level restores where the partition device path must remain accessible.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A disposable that holds the volume locks. Dispose when done writing.</returns>
-    Task<IDisposable> PrepareDiskForRestoreAsync(uint diskNumber, CancellationToken cancellationToken = default);
+    Task<IDisposable> PrepareDiskForRestoreAsync(uint diskNumber, bool takeOffline = true, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Dismounts and locks a single partition's volume on a disk.
+    /// Use this for partition-level restores to avoid dismounting other volumes
+    /// (e.g., the one hosting the source VHDX file).
+    /// </summary>
+    Task<IDisposable> PreparePartitionForRestoreAsync(uint diskNumber, uint partitionNumber, CancellationToken cancellationToken = default);
 }
 
 public class DiskPreparationService : IDiskPreparationService
@@ -59,7 +68,86 @@ public class DiskPreparationService : IDiskPreparationService
         _diskEnumerator = diskEnumerator ?? throw new ArgumentNullException(nameof(diskEnumerator));
     }
 
-    public async Task<IDisposable> PrepareDiskForRestoreAsync(uint diskNumber, CancellationToken cancellationToken = default)
+    public async Task<IDisposable> PreparePartitionForRestoreAsync(uint diskNumber, uint partitionNumber, CancellationToken cancellationToken = default)
+    {
+        var lockedVolumes = new LockedVolumeSet();
+
+        await _diskEnumerator.RefreshAsync();
+        var partitions = await _diskEnumerator.GetPartitionsAsync(diskNumber);
+        var partition = partitions.FirstOrDefault(p => p.PartitionNumber == partitionNumber);
+
+        if (partition is null)
+        {
+            Log.Warning("PreparePartition: partition {Part} not found on disk {Disk}", partitionNumber, diskNumber);
+            return lockedVolumes;
+        }
+
+        if (string.IsNullOrEmpty(partition.VolumePath))
+        {
+            Log.Debug("PreparePartition: partition {Disk}:{Part} has no volume path, nothing to dismount",
+                diskNumber, partitionNumber);
+            return lockedVolumes;
+        }
+
+        Log.Information("Dismounting volume {VolumePath} (Disk {Disk}, Partition {Part})",
+            partition.VolumePath, diskNumber, partitionNumber);
+
+        try
+        {
+            var volumeHandle = DiskApi.CreateFile(
+                partition.VolumePath,
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                IntPtr.Zero, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+
+            if (volumeHandle.IsInvalid)
+            {
+                int err = Marshal.GetLastWin32Error();
+                Log.Warning("Could not open volume {Volume} for dismount, error {Error}", partition.VolumePath, err);
+                return lockedVolumes;
+            }
+
+            // Lock with retry
+            bool locked = false;
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                if (DiskApi.DeviceIoControl(volumeHandle, DiskApi.FSCTL_LOCK_VOLUME,
+                    IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero))
+                {
+                    locked = true;
+                    Log.Debug("Locked volume {Volume} on attempt {Attempt}", partition.VolumePath, attempt + 1);
+                    break;
+                }
+                int lockErr = Marshal.GetLastWin32Error();
+                Log.Warning("Lock attempt {Attempt}/5 failed for {Volume}, error {Error}. Retrying...",
+                    attempt + 1, partition.VolumePath, lockErr);
+                Thread.Sleep(500);
+            }
+
+            if (!locked)
+                Log.Warning("Could not lock volume {Volume} after 5 attempts. Attempting dismount anyway.", partition.VolumePath);
+
+            if (!DiskApi.DeviceIoControl(volumeHandle, DiskApi.FSCTL_DISMOUNT_VOLUME,
+                IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero))
+            {
+                int dismountErr = Marshal.GetLastWin32Error();
+                Log.Error("Failed to dismount volume {Volume}, error {Error}", partition.VolumePath, dismountErr);
+                volumeHandle.Dispose();
+                return lockedVolumes;
+            }
+
+            Log.Information("Successfully dismounted volume {VolumePath}", partition.VolumePath);
+            lockedVolumes.Add(volumeHandle, partition.VolumePath);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error dismounting volume {VolumePath}", partition.VolumePath);
+        }
+
+        return lockedVolumes;
+    }
+
+    public async Task<IDisposable> PrepareDiskForRestoreAsync(uint diskNumber, bool takeOffline = true, CancellationToken cancellationToken = default)
     {
         var lockedVolumes = new LockedVolumeSet();
 
@@ -172,6 +260,13 @@ public class DiskPreparationService : IDiskPreparationService
 
             // Take the disk offline so Windows completely stops interacting with it
             // This prevents the "needs to be formatted" dialog and Error 19 (write-protect)
+            // Skip for partition-level restores, since offline removes partition device paths
+            if (!takeOffline)
+            {
+                Log.Information("Skipping disk offline (partition-level restore mode)");
+                return lockedVolumes;
+            }
+
             string physicalDiskPath = $"\\\\.\\PhysicalDrive{diskNumber}";
             var diskHandle = DiskApi.CreateFile(
                 physicalDiskPath,
@@ -272,12 +367,15 @@ public class DiskPreparationService : IDiskPreparationService
             {
                 try
                 {
+                    // Clear both offline and read-only attributes.
+                    // Windows sometimes marks a disk read-only after a full-disk
+                    // restore (the partition table was replaced while offline).
                     var attrs = new SetDiskAttributes
                     {
                         Version = 40,
                         Persist = 0,
-                        Attributes = 0, // Clear offline flag
-                        AttributesMask = DiskApi.DISK_ATTRIBUTE_OFFLINE
+                        Attributes = 0, // Clear both flags
+                        AttributesMask = DiskApi.DISK_ATTRIBUTE_OFFLINE | DiskApi.DISK_ATTRIBUTE_READ_ONLY
                     };
 
                     int size = Marshal.SizeOf<SetDiskAttributes>();

@@ -278,6 +278,10 @@ public sealed partial class DiskMapControl : UserControl
 
     private static Windows.UI.Color PickColor(PartitionInfo part, int index)
     {
+        // Unallocated space gets a neutral dark gray
+        if (part.IsUnallocated)
+            return Windows.UI.Color.FromArgb(255, 100, 100, 100);
+
         // Use semantic colors based on partition type
         var type = part.PartitionType?.ToUpperInvariant() ?? string.Empty;
         if (type.Contains("EFI") || type.Contains("ESP") || type.Contains("SYSTEM"))

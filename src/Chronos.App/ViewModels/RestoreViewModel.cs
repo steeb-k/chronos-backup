@@ -26,6 +26,23 @@ public partial class RestoreViewModel : ObservableObject
     [ObservableProperty] public partial DiskInfo? SelectedTargetDisk { get; set; }
     [ObservableProperty] public partial PartitionInfo? SelectedTargetPartition { get; set; }
     [ObservableProperty] public partial bool VerifyDuringRestore { get; set; } = true;
+
+    // --- Source partition selection (for single-partition restore from multi-partition VHDX) ---
+    [ObservableProperty] public partial List<PartitionInfo> AvailableSourcePartitions { get; set; } = new();
+    [ObservableProperty] public partial PartitionInfo? SelectedSourcePartition { get; set; }
+    [ObservableProperty] public partial bool HasSourcePartitions { get; set; }
+
+    /// <summary>Sentinel value representing "Entire Disk" in the source partition dropdown.</summary>
+    public static readonly PartitionInfo EntireDiskSourceSentinel = new()
+    {
+        DiskNumber = uint.MaxValue,
+        PartitionNumber = uint.MaxValue,
+        Size = 0,
+        PartitionType = "Entire Disk (all partitions)"
+    };
+
+    /// <summary>True when a single source partition is selected (not Entire Disk).</summary>
+    public bool IsSinglePartitionRestore => SelectedSourcePartition is not null && SelectedSourcePartition != EntireDiskSourceSentinel;
     [ObservableProperty] public partial bool IsRestoreInProgress { get; set; }
     [ObservableProperty] public partial double ProgressPercentage { get; set; }
     [ObservableProperty]
@@ -116,7 +133,13 @@ public partial class RestoreViewModel : ObservableObject
     {
         if (_diskEnumerator is not null)
         {
+            // Force full re-enumeration so the refresh button picks up
+            // any disk/partition changes (e.g. after a restore).
+            await _diskEnumerator.RefreshAsync();
             AvailableDisks = await _diskEnumerator.GetDisksAsync();
+
+            // Reset selection so partition lists & disk maps re-draw
+            SelectedTargetDisk = null;
         }
     }
 
@@ -137,6 +160,12 @@ public partial class RestoreViewModel : ObservableObject
         OnPropertyChanged(nameof(CanStartRestore));
     }
 
+    partial void OnSelectedSourcePartitionChanged(PartitionInfo? value)
+    {
+        OnPropertyChanged(nameof(IsSinglePartitionRestore));
+        OnPropertyChanged(nameof(CanStartRestore));
+    }
+
     private async Task LoadTargetPartitionsAsync(DiskInfo? disk)
     {
         if (_diskEnumerator is null || disk is null)
@@ -154,9 +183,13 @@ public partial class RestoreViewModel : ObservableObject
             !string.Equals(p.PartitionType, "MSR", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
+        // Also detect unallocated spaces on the target disk
+        var unallocated = await _diskEnumerator.GetUnallocatedSpacesAsync(disk.DiskNumber);
+
         // Prepend "Entire Disk" sentinel
         var list = new List<PartitionInfo> { EntireDiskSentinel };
         list.AddRange(userPartitions);
+        list.AddRange(unallocated);
         AvailableTargetPartitions = list;
         SelectedTargetPartition = EntireDiskSentinel;
         HasTargetPartitions = list.Count > 0;
@@ -168,6 +201,9 @@ public partial class RestoreViewModel : ObservableObject
         {
             SourceDisk = null;
             SourcePartitions = null;
+            AvailableSourcePartitions = new();
+            SelectedSourcePartition = null;
+            HasSourcePartitions = false;
             return;
         }
 
@@ -179,12 +215,49 @@ public partial class RestoreViewModel : ObservableObject
                 var (disk, parts) = sidecar.ToDiskAndPartitions();
                 SourceDisk = disk;
                 SourcePartitions = parts;
-                Log.Debug("Loaded sidecar for {Path}: {Count} partitions", imagePath, parts.Count);
+                Log.Debug("Loaded sidecar for {Path}: {Count} partitions, BackupType={BackupType}", imagePath, parts.Count, sidecar.BackupType ?? "FullDisk");
+
+                if (string.Equals(sidecar.BackupType, "Partition", StringComparison.OrdinalIgnoreCase)
+                    && sidecar.SourcePartitionNumber.HasValue)
+                {
+                    // Partition backup: auto-select the backed-up partition, no dropdown needed
+                    var backedUp = parts.FirstOrDefault(p => p.PartitionNumber == sidecar.SourcePartitionNumber.Value);
+                    AvailableSourcePartitions = new();
+                    SelectedSourcePartition = backedUp; // triggers IsSinglePartitionRestore = true
+                    HasSourcePartitions = false; // hide dropdown — partition is implicit
+                    Log.Debug("Partition backup detected: auto-selected partition {Part}", sidecar.SourcePartitionNumber.Value);
+                }
+                else
+                {
+                    // Full-disk backup: show partition dropdown when 2+ selectable partitions
+                    // Filter out MSR and very small partitions to keep the list meaningful
+                    var selectable = parts.Where(p =>
+                        !string.Equals(p.PartitionType, "MSR", StringComparison.OrdinalIgnoreCase) &&
+                        p.Size > 0).ToList();
+
+                    if (selectable.Count >= 2)
+                    {
+                        var list = new List<PartitionInfo> { EntireDiskSourceSentinel };
+                        list.AddRange(selectable);
+                        AvailableSourcePartitions = list;
+                        SelectedSourcePartition = EntireDiskSourceSentinel;
+                        HasSourcePartitions = true;
+                    }
+                    else
+                    {
+                        AvailableSourcePartitions = new();
+                        SelectedSourcePartition = null;
+                        HasSourcePartitions = false;
+                    }
+                }
             }
             else
             {
                 SourceDisk = null;
                 SourcePartitions = null;
+                AvailableSourcePartitions = new();
+                SelectedSourcePartition = null;
+                HasSourcePartitions = false;
                 Log.Debug("No sidecar found for {Path}", imagePath);
             }
         }
@@ -193,6 +266,9 @@ public partial class RestoreViewModel : ObservableObject
             Log.Warning(ex, "Failed to load sidecar for {Path}", imagePath);
             SourceDisk = null;
             SourcePartitions = null;
+            AvailableSourcePartitions = new();
+            SelectedSourcePartition = null;
+            HasSourcePartitions = false;
         }
     }
 
@@ -246,13 +322,23 @@ public partial class RestoreViewModel : ObservableObject
             targetPath = SelectedTargetDisk.DiskNumber.ToString();
         }
 
+        // When targeting unallocated space, pass the disk number only (partition will be created)
+        bool isTargetUnallocated = SelectedTargetPartition?.IsUnallocated == true;
+        if (isTargetUnallocated)
+        {
+            targetPath = SelectedTargetDisk.DiskNumber.ToString();
+        }
+
         // Create restore job
         var job = new RestoreJob
         {
             SourceImagePath = SourceImagePath,
             TargetPath = targetPath,
             VerifyDuringRestore = VerifyDuringRestore,
-            ForceOverwrite = false // We'll validate first
+            ForceOverwrite = false, // We'll validate first
+            SourcePartitionNumber = IsSinglePartitionRestore ? SelectedSourcePartition!.PartitionNumber : null,
+            TargetUnallocatedOffset = isTargetUnallocated ? SelectedTargetPartition!.Offset : null,
+            TargetUnallocatedSize = isTargetUnallocated ? SelectedTargetPartition!.Size : null,
         };
 
         // Validate first

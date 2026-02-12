@@ -69,8 +69,15 @@ public partial class CloneViewModel : ObservableObject
     {
         if (_diskEnumerator is not null)
         {
+            // Force full re-enumeration so the refresh button picks up
+            // any disk/partition changes.
+            await _diskEnumerator.RefreshAsync();
             AvailableDisks = await _diskEnumerator.GetDisksAsync();
             AvailableDestinationDisks = await _diskEnumerator.GetDisksAsync();
+
+            // Reset selections so partition lists & disk maps re-draw
+            SelectedDisk = null;
+            SelectedDestinationDisk = null;
         }
     }
 

@@ -59,14 +59,47 @@ public class RestoreEngine : IRestoreEngine
             progressReporter?.Report(new OperationProgress { StatusMessage = "Preparing target disk (dismounting volumes)..." });
             Log.Information("Preparing disk {DiskNumber} for restore: dismounting volumes", targetDisk);
             IDisposable? volumeLocks = null;
-            try
+            bool isPartitionRestore = job.SourcePartitionNumber.HasValue
+                || targetPartition.HasValue
+                || job.TargetUnallocatedOffset.HasValue;
+
+            // Auto-detect partition backup for partition-targeted restores without explicit source partition.
+            // When the sidecar says this is a partition backup and the user targets a specific partition
+            // or unallocated space but didn't pick a source partition, auto-populate it from the sidecar.
+            if (!job.SourcePartitionNumber.HasValue && isPartitionRestore)
             {
-                volumeLocks = await _diskPreparation.PrepareDiskForRestoreAsync(targetDisk, cancellationToken);
+                var sidecar = await ImageSidecar.LoadAsync(job.SourceImagePath).ConfigureAwait(false);
+                if (sidecar?.BackupType == "Partition" && sidecar.SourcePartitionNumber.HasValue)
+                {
+                    job.SourcePartitionNumber = sidecar.SourcePartitionNumber.Value;
+                    Log.Information("Auto-detected partition backup from sidecar: SourcePartitionNumber={Part}",
+                        job.SourcePartitionNumber.Value);
+                }
+                else if (job.TargetUnallocatedOffset.HasValue)
+                {
+                    // Unallocated target absolutely requires knowing which source partition to extract
+                    throw new InvalidOperationException(
+                        "Cannot restore to unallocated space: the source VHDX has no sidecar file (.chronos.json) " +
+                        "so the source partition cannot be identified. Please use a backup that has a sidecar, " +
+                        "or restore over an existing partition instead.");
+                }
             }
-            catch (Exception ex)
+
+            // For partition-level restores, defer disk preparation to RestorePartitionFromVhdxAsync
+            // so the source VHDX can be attached first (it may reside on the target disk).
+            // For full-disk restores, prepare now (dismount + take offline).
+            if (!isPartitionRestore)
             {
-                Log.Warning(ex, "Failed to automatically prepare disk {DiskNumber}. Will attempt restore anyway.", targetDisk);
-                progressReporter?.Report(new OperationProgress { StatusMessage = "Warning: Could not dismount all volumes. Proceeding..." });
+                try
+                {
+                    volumeLocks = await _diskPreparation.PrepareDiskForRestoreAsync(
+                        targetDisk, takeOffline: true, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Failed to automatically prepare disk {DiskNumber}. Will attempt restore anyway.", targetDisk);
+                    progressReporter?.Report(new OperationProgress { StatusMessage = "Warning: Could not dismount all volumes. Proceeding..." });
+                }
             }
 
             try
@@ -79,7 +112,14 @@ public class RestoreEngine : IRestoreEngine
 
                 if (isVhdx)
                 {
-                    await RestoreFromVhdxAsync(job, progressReporter, cancellationToken);
+                    if (job.SourcePartitionNumber.HasValue)
+                    {
+                        await RestorePartitionFromVhdxAsync(job, progressReporter, cancellationToken);
+                    }
+                    else
+                    {
+                        await RestoreFromVhdxAsync(job, progressReporter, cancellationToken);
+                    }
                 }
                 else
                 {
@@ -167,7 +207,30 @@ public class RestoreEngine : IRestoreEngine
             string ext = Path.GetExtension(job.SourceImagePath).ToLowerInvariant();
             bool isVhdx = ext is ".vhdx" or ".vhd";
 
-            if (isVhdx)
+            if (job.SourcePartitionNumber.HasValue && isVhdx)
+            {
+                // Single-partition restore: get source partition size from sidecar
+                var sidecarForSize = await ImageSidecar.LoadAsync(job.SourceImagePath).ConfigureAwait(false);
+                var srcPartSidecar = sidecarForSize?.Partitions.FirstOrDefault(
+                    p => p.PartitionNumber == job.SourcePartitionNumber.Value);
+                if (srcPartSidecar is not null)
+                {
+                    sourceSize = (long)srcPartSidecar.Size;
+                    Log.Debug("Single-partition restore: source partition {Part} size = {Size} bytes",
+                        job.SourcePartitionNumber.Value, sourceSize);
+                }
+                else
+                {
+                    // Fall back to attaching the VHDX to find the partition size
+                    using var attached = await _virtualDiskService.AttachVhdxReadOnlyAsync(job.SourceImagePath, CancellationToken.None);
+                    uint sourceDiskNumber = ParsePhysicalDrivePath(attached.PhysicalPath);
+                    await _diskEnumerator.RefreshAsync();
+                    var srcParts = await _diskEnumerator.GetPartitionsAsync(sourceDiskNumber);
+                    var srcPart = srcParts.FirstOrDefault(p => p.PartitionNumber == job.SourcePartitionNumber.Value);
+                    sourceSize = srcPart is not null ? (long)srcPart.Size : 0;
+                }
+            }
+            else if (isVhdx)
             {
                 // For VHDX, we need to get the virtual size
                 // We'll do this by attaching it read-only temporarily
@@ -192,7 +255,14 @@ public class RestoreEngine : IRestoreEngine
 
             // Get target size
             long targetSize = 0;
-            if (targetPartition.HasValue)
+            if (job.TargetUnallocatedOffset.HasValue)
+            {
+                // Targeting unallocated space — size is provided
+                targetSize = (long)(job.TargetUnallocatedSize ?? 0);
+                Log.Debug("Target is unallocated space: Offset={Offset}, Size={Size}",
+                    job.TargetUnallocatedOffset.Value, targetSize);
+            }
+            else if (targetPartition.HasValue)
             {
                 var partitions = await _diskEnumerator.GetPartitionsAsync(targetDisk);
                 var targetPart = partitions.FirstOrDefault(p => p.PartitionNumber == targetPartition.Value);
@@ -210,16 +280,26 @@ public class RestoreEngine : IRestoreEngine
             }
 
             // Verify target is large enough for allocated data
-            // For smart restore (VHDX), we can restore to smaller targets if allocated data fits
-            // We allow the restore and will check at runtime if ranges exceed target size
+            bool isPartitionTarget = targetPartition.HasValue || job.TargetUnallocatedOffset.HasValue;
+
             if (targetSize < sourceSize)
             {
                 long sizeDifference = sourceSize - targetSize;
                 double percentDifference = (double)sizeDifference / sourceSize;
                 
-                if (isVhdx)
+                if (isPartitionTarget)
                 {
-                    // Smart restore mode - we can potentially restore to a smaller drive
+                    // Partition-targeted restore: source MUST fit in the target partition.
+                    // There is no smart restore for partition targets — data would be silently truncated.
+                    string errorMsg = $"Source image ({FormatBytes((ulong)sourceSize)}) is larger than target partition ({FormatBytes((ulong)targetSize)}). " +
+                        $"Cannot restore — data would be truncated by {FormatBytes((ulong)sizeDifference)}. " +
+                        $"Choose a partition at least {FormatBytes((ulong)sourceSize)} in size.";
+                    Log.Error(errorMsg);
+                    throw new InvalidOperationException(errorMsg);
+                }
+                else if (isVhdx)
+                {
+                    // Full-disk smart restore mode - we can potentially restore to a smaller drive
                     // Warn but allow - the actual restore will fail gracefully if allocated data doesn't fit
                     Log.Warning("Target ({TargetSize}) is smaller than source image ({SourceSize}). " +
                         "Smart restore will attempt to copy only allocated data. If allocated data exceeds target size, restore will fail.",
@@ -241,36 +321,40 @@ public class RestoreEngine : IRestoreEngine
                 }
             }
 
-            // Validate sector size compatibility
-            var sidecar = await ImageSidecar.LoadAsync(job.SourceImagePath).ConfigureAwait(false);
-            if (sidecar?.SourceSectorSize is uint sourceSectorSize && sourceSectorSize > 0)
+            // Validate sector size compatibility (not applicable for single-partition restore
+            // since partition data doesn't contain sector-relative GPT addresses)
+            if (!job.SourcePartitionNumber.HasValue)
             {
-                // Query target disk sector size
-                uint targetSectorSize = 512; // default
-                try
+                var sidecar = await ImageSidecar.LoadAsync(job.SourceImagePath).ConfigureAwait(false);
+                if (sidecar?.SourceSectorSize is uint sourceSectorSize && sourceSectorSize > 0)
                 {
-                    using var targetHandle = await _diskReader.OpenDiskAsync(targetDisk, CancellationToken.None).ConfigureAwait(false);
-                    targetSectorSize = targetHandle.SectorSize;
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning(ex, "Could not query target disk sector size, assuming 512 bytes");
-                }
+                    // Query target disk sector size
+                    uint targetSectorSize = 512; // default
+                    try
+                    {
+                        using var targetHandle = await _diskReader.OpenDiskAsync(targetDisk, CancellationToken.None).ConfigureAwait(false);
+                        targetSectorSize = targetHandle.SectorSize;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Could not query target disk sector size, assuming 512 bytes");
+                    }
 
-                if (sourceSectorSize != targetSectorSize)
-                {
-                    string errorMsg = $"Sector size mismatch: source image has {sourceSectorSize}-byte sectors, " +
-                        $"target disk has {targetSectorSize}-byte sectors. " +
-                        $"Cross-sector-size restore is not supported because GPT partition tables use sector-relative addresses. " +
-                        $"Restoring would corrupt the partition layout.";
-                    Log.Error(errorMsg);
-                    throw new InvalidOperationException(errorMsg);
+                    if (sourceSectorSize != targetSectorSize)
+                    {
+                        string errorMsg = $"Sector size mismatch: source image has {sourceSectorSize}-byte sectors, " +
+                            $"target disk has {targetSectorSize}-byte sectors. " +
+                            $"Cross-sector-size restore is not supported because GPT partition tables use sector-relative addresses. " +
+                            $"Restoring would corrupt the partition layout.";
+                        Log.Error(errorMsg);
+                        throw new InvalidOperationException(errorMsg);
+                    }
+                    Log.Debug("Sector size validation passed: source={Source}, target={Target}", sourceSectorSize, targetSectorSize);
                 }
-                Log.Debug("Sector size validation passed: source={Source}, target={Target}", sourceSectorSize, targetSectorSize);
-            }
-            else
-            {
-                Log.Debug("No source sector size in sidecar metadata (legacy image), skipping sector size validation");
+                else
+                {
+                    Log.Debug("No source sector size in sidecar metadata (legacy image), skipping sector size validation");
+                }
             }
 
             Log.Information("Restore validation passed: Source={Source} ({SourceSize} bytes), Target={Target} ({TargetSize} bytes)",
@@ -309,36 +393,57 @@ public class RestoreEngine : IRestoreEngine
 
             if (targetPartition.HasValue)
             {
-                targetHandle = await _diskWriter.OpenPartitionForWriteAsync(targetDisk, targetPartition.Value, ct);
+                // Write via PhysicalDrive + byte offset instead of partition device path.
+                // Partition paths (\\.\Harddisk{N}Partition{M}) are unreliable after
+                // volume dismount and inaccessible when the disk is offline.
+                var targetParts = await _diskEnumerator.GetPartitionsAsync(targetDisk);
+                var tgtPart = targetParts.FirstOrDefault(p => p.PartitionNumber == targetPartition.Value)
+                    ?? throw new InvalidOperationException(
+                        $"Target partition {targetPartition.Value} not found on disk {targetDisk}");
+
+                string targetDrivePath = $"\\\\.\\PhysicalDrive{targetDisk}";
+                targetHandle = await _diskWriter.OpenDiskForWriteAsync(targetDrivePath, ct);
+                targetHandle.BaseSectorOffset = (long)(tgtPart.Offset / targetHandle.SectorSize);
+                Log.Information("Target opened via PhysicalDrive (partition {Part}): Offset={Offset}, BaseSectorOffset={Base}",
+                    targetPartition.Value, tgtPart.Offset, targetHandle.BaseSectorOffset);
+
+                // CRITICAL: When restoring to a specific partition, do a simple bounded copy.
+                // We MUST NOT use BuildRestoreRanges / smart restore here because:
+                //   - BuildRestoreRanges produces disk-absolute offsets for the SOURCE disk
+                //   - CopySectorsWithRangesAsync adds BaseSectorOffset to those offsets
+                //   - If the source VHDX is larger than the target partition, the ranges
+                //     will extend past the partition boundary, corrupting adjacent partitions
+                ulong copySize = Math.Min(sourceSize, tgtPart.Size);
+                Log.Information("Partition-targeted restore: copying {CopySize} bytes (source={Source}, partition={PartSize})",
+                    copySize, sourceSize, tgtPart.Size);
+                await CopySectorsAsync(sourceHandle, targetHandle, copySize, job.VerifyDuringRestore, progressReporter, ct);
             }
             else
             {
                 string targetPath = $"\\\\.\\PhysicalDrive{targetDisk}";
                 targetHandle = await _diskWriter.OpenDiskForWriteAsync(targetPath, ct);
-            }
+                Log.Information("Target opened for full-disk write: {Path}", job.TargetPath);
 
-            Log.Information("Target opened for write: {Path}", job.TargetPath);
+                // Full-disk restore: use smart restore with allocated ranges
+                var targetDisks = await _diskEnumerator.GetDisksAsync();
+                var targetDiskInfo = targetDisks.FirstOrDefault(d => d.DiskNumber == targetDisk);
+                ulong targetSize = targetDiskInfo?.Size ?? 0;
 
-            // Get target size for smart restore validation
-            var targetDisks = await _diskEnumerator.GetDisksAsync();
-            var targetDiskInfo = targetDisks.FirstOrDefault(d => d.DiskNumber == targetDisk);
-            ulong targetSize = targetDiskInfo?.Size ?? 0;
+                progressReporter?.Report(new OperationProgress { StatusMessage = "Analyzing disk structure for smart restore..." });
+                var ranges = await BuildRestoreRangesAsync(sourceDiskNumber, sourceSize, targetSize, ct);
 
-            // Try to build allocated ranges for sparse restore
-            progressReporter?.Report(new OperationProgress { StatusMessage = "Analyzing disk structure for smart restore..." });
-            var ranges = await BuildRestoreRangesAsync(sourceDiskNumber, sourceSize, targetSize, ct);
-
-            if (ranges is not null && ranges.Count > 0)
-            {
-                long totalToCopy = ranges.Sum(r => r.Length);
-                Log.Information("Smart restore: {RangeCount} ranges, {ToCopy} bytes to copy (source disk {SourceSize} bytes, target {TargetSize} bytes)",
-                    ranges.Count, totalToCopy, sourceSize, targetSize);
-                await CopySectorsWithRangesAsync(sourceHandle, targetHandle, ranges, sourceSize, progressReporter, ct);
-            }
-            else
-            {
-                Log.Information("Full restore: no allocated ranges available, copying entire disk");
-                await CopySectorsAsync(sourceHandle, targetHandle, sourceSize, job.VerifyDuringRestore, progressReporter, ct);
+                if (ranges is not null && ranges.Count > 0)
+                {
+                    long totalToCopy = ranges.Sum(r => r.Length);
+                    Log.Information("Smart restore: {RangeCount} ranges, {ToCopy} bytes to copy (source disk {SourceSize} bytes, target {TargetSize} bytes)",
+                        ranges.Count, totalToCopy, sourceSize, targetSize);
+                    await CopySectorsWithRangesAsync(sourceHandle, targetHandle, ranges, sourceSize, progressReporter, ct);
+                }
+                else
+                {
+                    Log.Information("Full restore: no allocated ranges available, copying entire disk");
+                    await CopySectorsAsync(sourceHandle, targetHandle, sourceSize, job.VerifyDuringRestore, progressReporter, ct);
+                }
             }
 
             progressReporter?.Report(new OperationProgress { StatusMessage = "Flushing buffers...", PercentComplete = 99 });
@@ -348,6 +453,243 @@ public class RestoreEngine : IRestoreEngine
             sourceHandle?.Dispose();
             targetHandle?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Restores a single partition from a multi-partition VHDX to either an existing
+    /// partition or an unallocated region on the target disk.
+    /// </summary>
+    private async Task RestorePartitionFromVhdxAsync(RestoreJob job, IProgressReporter? progressReporter, CancellationToken ct)
+    {
+        uint srcPartNum = job.SourcePartitionNumber!.Value;
+        progressReporter?.Report(new OperationProgress { StatusMessage = $"Attaching source VHDX (partition {srcPartNum})..." });
+
+        // Load sidecar to determine if this is a single-partition backup.
+        // Single-partition VHDXs contain only one partition (always numbered 1 by Windows),
+        // regardless of the original partition number on the source disk.
+        var sidecar = await ImageSidecar.LoadAsync(job.SourceImagePath).ConfigureAwait(false);
+        bool isSinglePartitionBackup = sidecar?.BackupType == "Partition";
+        SidecarPartition? sidecarPartInfo = null;
+        if (isSinglePartitionBackup && sidecar!.SourcePartitionNumber.HasValue)
+        {
+            sidecarPartInfo = sidecar.Partitions?.FirstOrDefault(
+                p => p.PartitionNumber == sidecar.SourcePartitionNumber.Value);
+        }
+
+        using var attached = await _virtualDiskService.AttachVhdxReadOnlyAsync(job.SourceImagePath, ct);
+        Log.Information("Source VHDX attached for partition restore: PhysicalPath={PhysicalPath}", attached.PhysicalPath);
+
+        uint sourceDiskNumber = ParsePhysicalDrivePath(attached.PhysicalPath);
+
+        // Ensure fresh partition data for the newly attached VHDX
+        await _diskEnumerator.RefreshAsync();
+
+        // Find the source partition in the attached VHDX.
+        // For single-partition backups, the VHDX has exactly one partition (number 1),
+        // even if the original partition was e.g. partition 4 on the source disk.
+        var sourcePartitions = await _diskEnumerator.GetPartitionsAsync(sourceDiskNumber);
+        uint vhdxPartNum = isSinglePartitionBackup ? 1 : srcPartNum;
+        var srcPart = sourcePartitions.FirstOrDefault(p => p.PartitionNumber == vhdxPartNum);
+
+        // Fallback: if the expected partition number isn't found but there's exactly one partition, use it
+        if (srcPart is null && sourcePartitions.Count == 1)
+        {
+            srcPart = sourcePartitions[0];
+            Log.Information("Using sole VHDX partition {PartNum} (original source was partition {Original})",
+                srcPart.PartitionNumber, srcPartNum);
+        }
+
+        if (srcPart is null)
+        {
+            throw new InvalidOperationException(
+                $"Source partition {srcPartNum} not found in attached VHDX (found: {string.Join(", ", sourcePartitions.Select(p => p.PartitionNumber))})");
+        }
+
+        // For single-partition backups, use partition metadata from sidecar (has correct GPT type)
+        // rather than the VHDX-reported type (which may be wrong, e.g. "16-bit FAT" for Recovery).
+        string? effectivePartitionType = srcPart.PartitionType;
+        Guid? effectiveGptTypeGuid = srcPart.GptTypeGuid;
+        if (isSinglePartitionBackup && sidecarPartInfo is not null)
+        {
+            effectivePartitionType = sidecarPartInfo.PartitionType ?? effectivePartitionType;
+            if (!string.IsNullOrEmpty(sidecarPartInfo.GptTypeGuid) && Guid.TryParse(sidecarPartInfo.GptTypeGuid, out var parsed))
+                effectiveGptTypeGuid = parsed;
+            Log.Information("Using sidecar partition metadata: Type={Type}, GptTypeGuid={Guid}",
+                effectivePartitionType, effectiveGptTypeGuid);
+        }
+
+        Log.Information("Source partition {PartNum}: Offset={Offset}, Size={Size}, Type={Type}",
+            srcPart.PartitionNumber, srcPart.Offset, srcPart.Size, effectivePartitionType);
+
+        DiskReadHandle? sourceHandle = null;
+        DiskWriteHandle? targetHandle = null;
+
+        try
+        {
+            // Open source partition for reading (use the VHDX partition number, not the original)
+            progressReporter?.Report(new OperationProgress { StatusMessage = "Opening source partition..." });
+            sourceHandle = await _diskReader.OpenPartitionAsync(sourceDiskNumber, srcPart.PartitionNumber, ct);
+            ulong sourcePartSize = srcPart.Size;
+            Log.Information("Source partition opened: Size={Size} bytes", sourcePartSize);
+
+            // Determine target: existing partition or unallocated space
+            (uint targetDisk, uint? targetPartition) = ParseTargetPath(job.TargetPath);
+
+            ulong targetPartOffset;
+
+            if (job.TargetUnallocatedOffset.HasValue)
+            {
+                // --- Restore to unallocated space: create a new partition first ---
+                // IMPORTANT: Create the partition BEFORE opening the physical drive for write,
+                // because New-Partition causes Windows to auto-mount a volume on the new partition.
+                // We must dismount that volume before we can write raw sectors to the drive.
+                ulong unallocOffset = job.TargetUnallocatedOffset.Value;
+                ulong unallocSize = job.TargetUnallocatedSize ?? sourcePartSize;
+
+                if (sourcePartSize > unallocSize)
+                {
+                    throw new InvalidOperationException(
+                        $"Source partition ({FormatBytes(sourcePartSize)} ) does not fit in " +
+                        $"unallocated region ({FormatBytes(unallocSize)}).");
+                }
+
+                progressReporter?.Report(new OperationProgress { StatusMessage = "Creating partition in unallocated space..." });
+                Log.Information("Creating new partition on disk {Disk} at offset {Offset} with size {Size}",
+                    targetDisk, unallocOffset, sourcePartSize);
+
+                uint newPartNum = await CreatePartitionAsync(targetDisk, unallocOffset, sourcePartSize, effectivePartitionType, ct, effectiveGptTypeGuid);
+                Log.Information("New partition created: Disk {Disk}, Partition {Part}", targetDisk, newPartNum);
+
+                // Refresh to get the new partition's actual offset
+                await _diskEnumerator.RefreshAsync();
+                var newParts = await _diskEnumerator.GetPartitionsAsync(targetDisk);
+                var newPart = newParts.FirstOrDefault(p => p.PartitionNumber == newPartNum);
+                targetPartOffset = newPart?.Offset ?? unallocOffset;
+
+                // Dismount only the auto-mounted volume on the NEW partition.
+                // Do NOT dismount all volumes — the source VHDX may reside on another
+                // volume of the same disk and dismounting it would invalidate its file handle.
+                progressReporter?.Report(new OperationProgress { StatusMessage = "Dismounting new partition volume..." });
+                Log.Information("Dismounting new partition {Part} on disk {Disk}", newPartNum, targetDisk);
+                await _diskPreparation.PreparePartitionForRestoreAsync(targetDisk, newPartNum, ct);
+            }
+            else if (targetPartition.HasValue)
+            {
+                // --- Restore over an existing partition ---
+                var targetParts = await _diskEnumerator.GetPartitionsAsync(targetDisk);
+                var tgtPart = targetParts.FirstOrDefault(p => p.PartitionNumber == targetPartition.Value);
+                if (tgtPart is null)
+                {
+                    throw new InvalidOperationException(
+                        $"Target partition {targetPartition.Value} not found on disk {targetDisk}");
+                }
+                targetPartOffset = tgtPart.Offset;
+
+                // Dismount only the target partition's volume before overwriting it.
+                progressReporter?.Report(new OperationProgress { StatusMessage = "Dismounting target partition..." });
+                Log.Information("Dismounting target partition {Part} on disk {Disk}", targetPartition.Value, targetDisk);
+                await _diskPreparation.PreparePartitionForRestoreAsync(targetDisk, targetPartition.Value, ct);
+            }
+            else
+            {
+                throw new InvalidOperationException(
+                    "Single-partition restore requires either a target partition or unallocated space target.");
+            }
+
+            // Open the physical drive for write AFTER any partition creation / dismount.
+            // Partition device paths (\\.\Harddisk{N}Partition{M}) are unreliable after
+            // volume dismount, so we write to the physical drive at the partition's byte offset.
+            string targetDrivePath = $"\\\\.\\PhysicalDrive{targetDisk}";
+            progressReporter?.Report(new OperationProgress { StatusMessage = "Opening target disk for write..." });
+            targetHandle = await _diskWriter.OpenDiskForWriteAsync(targetDrivePath, ct);
+
+            // Set the base sector offset so all writes land at the target partition's location
+            targetHandle.BaseSectorOffset = (long)(targetPartOffset / targetHandle.SectorSize);
+            Log.Information("Target opened for single-partition write: Drive={Drive}, PartitionOffset={Offset}, BaseSectorOffset={BaseSector}",
+                targetDrivePath, targetPartOffset, targetHandle.BaseSectorOffset);
+
+            // Copy data (partition reader gives us partition-relative offsets starting at 0)
+            await CopySectorsAsync(sourceHandle, targetHandle, sourcePartSize, false, progressReporter, ct);
+
+            progressReporter?.Report(new OperationProgress { StatusMessage = "Flushing buffers...", PercentComplete = 99 });
+        }
+        finally
+        {
+            sourceHandle?.Dispose();
+            targetHandle?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Creates a new partition on the given disk using PowerShell's New-Partition cmdlet.
+    /// Returns the 1-based partition number of the newly created partition.
+    /// </summary>
+    private async Task<uint> CreatePartitionAsync(uint diskNumber, ulong offsetBytes, ulong sizeBytes, string? sourcePartitionType, CancellationToken ct, Guid? gptTypeGuidOverride = null)
+    {
+        string gptGuid = gptTypeGuidOverride.HasValue && gptTypeGuidOverride.Value != Guid.Empty
+            ? gptTypeGuidOverride.Value.ToString()
+            : MapPartitionTypeToGptGuid(sourcePartitionType);
+
+        // Build a PowerShell one-liner that creates the partition and outputs just the number.
+        // Note: -NoDefaultDriveLetter is not available on all Windows versions, so we let
+        // Windows auto-assign a drive letter if it wants — the disk re-preparation step
+        // after partition creation will dismount it before we write raw sectors.
+        string script = $"New-Partition -DiskNumber {diskNumber} -Offset {offsetBytes} -Size {sizeBytes} " +
+                        $"-GptType '{{{gptGuid}}}' | Select-Object -ExpandProperty PartitionNumber";
+
+        Log.Information("Creating partition via PowerShell: DiskNumber={Disk}, Offset={Offset}, Size={Size}, GptType={GptType} (source type: {SourceType})",
+            diskNumber, offsetBytes, sizeBytes, gptGuid, sourcePartitionType ?? "unknown");
+
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-NoProfile -NonInteractive -Command \"{script}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+
+        using var proc = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start PowerShell process");
+
+        string stdout = await proc.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
+        string stderr = await proc.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
+        await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+
+        if (proc.ExitCode != 0)
+        {
+            Log.Error("PowerShell New-Partition failed (exit {Exit}): {Stderr}", proc.ExitCode, stderr);
+            throw new InvalidOperationException($"Failed to create partition: {stderr.Trim()}");
+        }
+
+        string trimmed = stdout.Trim();
+        if (!uint.TryParse(trimmed, out uint partNum))
+        {
+            throw new InvalidOperationException($"New-Partition returned unexpected output: '{trimmed}'");
+        }
+
+        Log.Information("Successfully created partition {PartNum} on disk {Disk}", partNum, diskNumber);
+
+        // Give Windows a moment to recognize the new partition device path
+        await Task.Delay(1000, ct).ConfigureAwait(false);
+        await _diskEnumerator.RefreshAsync().ConfigureAwait(false);
+
+        return partNum;
+    }
+
+    /// <summary>
+    /// Maps a human-readable partition type string (from WMI / sidecar) to the corresponding GPT type GUID.
+    /// </summary>
+    private static string MapPartitionTypeToGptGuid(string? partitionType)
+    {
+        return partitionType?.ToUpperInvariant() switch
+        {
+            "EFI (ESP)" => "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",  // EFI System Partition
+            "MSR"       => "e3c9e316-0b5c-4db8-817d-f92df00215ae",  // Microsoft Reserved
+            "RECOVERY"  => "de94bba4-06d1-4d40-a16a-bfd50179d6ac",  // Windows Recovery Environment
+            _           => "ebd0a0a2-b9e5-4433-87c0-68b6b72699c7",  // Basic Data (default)
+        };
     }
 
     private async Task RestoreFromRawImageAsync(RestoreJob job, IProgressReporter? progressReporter, CancellationToken ct)

@@ -27,6 +27,12 @@ public interface IDiskEnumerator
     /// Refresh the disk list (re-enumerate).
     /// </summary>
     Task RefreshAsync();
+
+    /// <summary>
+    /// Returns unallocated (free) regions on a disk as pseudo-PartitionInfo entries.
+    /// Each entry has <see cref="PartitionInfo.IsUnallocated"/> = true.
+    /// </summary>
+    Task<List<PartitionInfo>> GetUnallocatedSpacesAsync(uint diskNumber);
 }
 
 /// <summary>
@@ -67,6 +73,82 @@ public class DiskEnumerator : IDiskEnumerator
     {
         _cachedDisks = await EnumerateDisksAsync();
         _cachedPartitions.Clear();
+    }
+
+    public async Task<List<PartitionInfo>> GetUnallocatedSpacesAsync(uint diskNumber)
+    {
+        var disk = await GetDiskAsync(diskNumber);
+        if (disk is null)
+            return new List<PartitionInfo>();
+
+        var partitions = await GetPartitionsAsync(diskNumber);
+        return ComputeUnallocatedSpaces(disk, partitions);
+    }
+
+    /// <summary>
+    /// Computes unallocated (free) regions on a disk by finding gaps between partitions.
+    /// </summary>
+    internal static List<PartitionInfo> ComputeUnallocatedSpaces(DiskInfo disk, List<PartitionInfo> partitions)
+    {
+        var result = new List<PartitionInfo>();
+
+        // Typical GPT overhead: first 1 MiB is reserved for protective MBR + primary GPT header/entries.
+        // Last 1 MiB is reserved for backup GPT.
+        const ulong gptFrontReserved = 1024 * 1024;      // 1 MiB
+        const ulong gptBackReserved  = 1024 * 1024;      // 1 MiB
+        const ulong minUsableGap     = 10 * 1024 * 1024;  // Ignore gaps < 10 MiB
+
+        ulong usableStart = gptFrontReserved;
+        ulong usableEnd   = disk.Size > gptBackReserved ? disk.Size - gptBackReserved : disk.Size;
+
+        // Sort partitions by offset
+        var sorted = partitions.OrderBy(p => p.Offset).ToList();
+
+        ulong cursor = usableStart;
+        uint unallocIndex = 0;
+
+        foreach (var part in sorted)
+        {
+            if (part.Offset > cursor)
+            {
+                ulong gapSize = part.Offset - cursor;
+                if (gapSize >= minUsableGap)
+                {
+                    unallocIndex++;
+                    result.Add(new PartitionInfo
+                    {
+                        DiskNumber = disk.DiskNumber,
+                        PartitionNumber = 10000 + unallocIndex, // high sentinel number
+                        Size = gapSize,
+                        Offset = cursor,
+                        IsUnallocated = true,
+                        PartitionType = "Unallocated",
+                    });
+                }
+            }
+            cursor = Math.Max(cursor, part.Offset + part.Size);
+        }
+
+        // Gap after the last partition
+        if (cursor < usableEnd)
+        {
+            ulong gapSize = usableEnd - cursor;
+            if (gapSize >= minUsableGap)
+            {
+                unallocIndex++;
+                result.Add(new PartitionInfo
+                {
+                    DiskNumber = disk.DiskNumber,
+                    PartitionNumber = 10000 + unallocIndex,
+                    Size = gapSize,
+                    Offset = cursor,
+                    IsUnallocated = true,
+                    PartitionType = "Unallocated",
+                });
+            }
+        }
+
+        return result;
     }
 
     private async Task<List<DiskInfo>> EnumerateDisksAsync()
@@ -167,6 +249,8 @@ public class DiskEnumerator : IDiskEnumerator
                                 VolumePath = volumePath,
                                 DriveLetter = driveLetter,
                                 PartitionType = partType,
+                                GptTypeGuid = layoutMatch.PartitionNumber > 0 && layoutMatch.GptTypeGuid != Guid.Empty
+                                    ? layoutMatch.GptTypeGuid : null,
                             };
 
                             Log.Debug("Partition enumerated: WMI DeviceID={DeviceID}, Offset={Offset} → DevicePartition={PartNum}, Size={Size}, Type={Type}",
@@ -184,6 +268,30 @@ public class DiskEnumerator : IDiskEnumerator
             catch
             {
                 // If WMI fails, return empty list
+            }
+
+            // Add partitions that IOCTL found but WMI skipped (e.g. MSR partitions).
+            // This prevents them from appearing as false "unallocated space".
+            foreach (var entry in driveLayout)
+            {
+                if (partitions.Any(p => p.PartitionNumber == entry.PartitionNumber))
+                    continue;
+
+                var partType = ClassifyGptTypeGuid(entry.GptTypeGuid);
+                var ioctlPart = new PartitionInfo
+                {
+                    DiskNumber = diskNumber,
+                    PartitionNumber = entry.PartitionNumber,
+                    Size = (ulong)entry.PartitionLength,
+                    Offset = (ulong)entry.StartingOffset,
+                    PartitionType = partType,
+                    GptTypeGuid = entry.GptTypeGuid != Guid.Empty ? entry.GptTypeGuid : null,
+                };
+
+                Log.Debug("Partition from IOCTL only (WMI skipped): Disk={Disk}, Partition={PartNum}, Offset={Offset}, Size={Size}, Type={Type}",
+                    diskNumber, entry.PartitionNumber, entry.StartingOffset, entry.PartitionLength, partType);
+
+                partitions.Add(ioctlPart);
             }
 
             // Resolve volume GUID paths for partitions that don't have drive letters
@@ -248,6 +356,26 @@ public class DiskEnumerator : IDiskEnumerator
         }
 
         return (null, null);
+    }
+
+    // Well-known GPT type GUIDs
+    private static readonly Guid GptBasicData  = new("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7");
+    private static readonly Guid GptEfiSystem  = new("c12a7328-f81f-11d2-ba4b-00a0c93ec93b");
+    private static readonly Guid GptMsReserved = new("e3c9e316-0b5c-4db8-817d-f92df00215ae");
+    private static readonly Guid GptRecovery   = new("de94bba4-06d1-4d40-a16a-bfd50179d6ac");
+
+    /// <summary>
+    /// Classifies a GPT partition type GUID into a human-readable label.
+    /// Used for IOCTL-only partitions that WMI skipped.
+    /// </summary>
+    private static string? ClassifyGptTypeGuid(Guid gptType)
+    {
+        if (gptType == GptEfiSystem)  return "EFI (ESP)";
+        if (gptType == GptMsReserved) return "MSR";
+        if (gptType == GptRecovery)   return "Recovery";
+        if (gptType == GptBasicData)  return "Primary";
+        if (gptType == Guid.Empty)    return null;
+        return gptType.ToString();
     }
 
     /// <summary>

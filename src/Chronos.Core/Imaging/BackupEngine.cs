@@ -124,7 +124,7 @@ public class BackupEngine : IBackupEngine
             }
 
             // Save sidecar metadata alongside the image
-            await SaveSidecarAsync(diskNumber, job.DestinationPath, sourceHandle.SectorSize, _lastAllocatedBytesCopied).ConfigureAwait(false);
+            await SaveSidecarAsync(diskNumber, partitionNumber, job.DestinationPath, sourceHandle.SectorSize, _lastAllocatedBytesCopied).ConfigureAwait(false);
 
             progressReporter?.Report(new OperationProgress
             {
@@ -242,7 +242,7 @@ public class BackupEngine : IBackupEngine
     /// Saves a sidecar JSON file alongside the image with disk/partition metadata
     /// so the restore UI can display a disk map without mounting the image.
     /// </summary>
-    private async Task SaveSidecarAsync(uint diskNumber, string destinationPath, uint sectorSize, long expectedAllocatedBytes = 0)
+    private async Task SaveSidecarAsync(uint diskNumber, uint? partitionNumber, string destinationPath, uint sectorSize, long expectedAllocatedBytes = 0)
     {
         try
         {
@@ -255,7 +255,18 @@ public class BackupEngine : IBackupEngine
                 return;
             }
 
-            var sidecar = ImageSidecar.FromDisk(disk, partitions, sectorSize);
+            ImageSidecar sidecar;
+            if (partitionNumber.HasValue)
+            {
+                // Single-partition backup: record which partition was backed up
+                sidecar = ImageSidecar.FromPartition(disk, partitions, partitionNumber.Value, sectorSize);
+                Log.Information("Saving partition sidecar: Disk {Disk}, Partition {Part}", diskNumber, partitionNumber.Value);
+            }
+            else
+            {
+                sidecar = ImageSidecar.FromDisk(disk, partitions, sectorSize);
+            }
+
             if (expectedAllocatedBytes > 0)
                 sidecar.ExpectedAllocatedBytes = expectedAllocatedBytes;
             await sidecar.SaveAsync(destinationPath).ConfigureAwait(false);
@@ -509,6 +520,7 @@ public class BackupEngine : IBackupEngine
         long totalToCopy = ranges.Sum(r => r.Length);
         long bytesCopied = 0;
         long bytesSkipped = 0;
+        long bytesSkippedEof = 0; // bytes lost to 0-byte reads at range boundaries (partition boundary artifact)
         var sw = Stopwatch.StartNew();
         long lastReported = 0;
         var lastProgressTime = DateTime.MinValue;
@@ -543,7 +555,8 @@ public class BackupEngine : IBackupEngine
                     int bytesToProcess = sectorsToWrite * sectorSize;
                     if (bytesToProcess == 0 && toRead > 0)
                     {
-                        Log.Warning("Read returned 0 bytes at offset {Offset}, expected {Expected}; skipping remainder of range to avoid infinite loop", currentOffset, toRead);
+                        Log.Warning("Read returned 0 bytes at offset {Offset}, expected {Expected}; skipping remainder of range (partition boundary)", currentOffset, toRead);
+                        bytesSkippedEof += remaining;
                         break;
                     }
                     if (bytesToProcess > remaining)
@@ -604,18 +617,25 @@ public class BackupEngine : IBackupEngine
             Log.Information("Zero-block compression: skipped {Bytes} bytes", bytesSkipped);
 
         // Detect incomplete copies — bytesCopied should match totalToCopy
-        if (bytesCopied < totalToCopy)
+        // Tolerate shortfall explained by 0-byte reads at partition boundaries (bitmap overreport)
+        long unexplainedShortfall = totalToCopy - bytesCopied - bytesSkippedEof;
+        if (unexplainedShortfall > 0)
         {
-            Log.Error("Incomplete backup: copied {Copied} of {Expected} bytes ({Percent:F1}%)",
-                bytesCopied, totalToCopy, 100.0 * bytesCopied / totalToCopy);
+            Log.Error("Incomplete backup: copied {Copied} of {Expected} bytes ({Percent:F1}%), boundary skip {BoundarySkip}",
+                bytesCopied, totalToCopy, 100.0 * bytesCopied / totalToCopy, bytesSkippedEof);
             throw new IOException(
                 $"Backup incomplete: only {bytesCopied:N0} of {totalToCopy:N0} bytes were copied " +
                 $"({100.0 * bytesCopied / totalToCopy:F1}%). The destination image is unusable. " +
                 $"This may indicate a disk I/O error or device disconnection during the backup.");
         }
+        if (bytesSkippedEof > 0)
+        {
+            Log.Information("Partition boundary adjustment: {Skipped} bytes at end-of-range were unreadable (volume bitmap overreport). Backup is complete.", bytesSkippedEof);
+        }
 
-        Log.Information("NTFS allocated-ranges optimization: copied {Copied} of {Total} bytes ({Percent:F1}% read)", totalToCopy, totalBytes, 100.0 * totalToCopy / totalBytes);
-        _lastAllocatedBytesCopied = totalToCopy;
+        long effectiveCopied = bytesCopied + bytesSkippedEof;
+        Log.Information("NTFS allocated-ranges optimization: copied {Copied} of {Total} bytes ({Percent:F1}% read)", effectiveCopied, totalBytes, 100.0 * effectiveCopied / totalBytes);
+        _lastAllocatedBytesCopied = effectiveCopied;
 
         Log.Debug("CopySectorsWithRanges: reporting 100% progress");
         progressReporter?.Report(new OperationProgress

@@ -48,6 +48,12 @@ public class PartitionInfo
     /// <summary>Partition type description, e.g. "EFI (ESP)", "Primary", "Recovery". Null if unknown.</summary>
     public string? PartitionType { get; set; }
 
+    /// <summary>Raw GPT type GUID. Null for MBR partitions or when unavailable.</summary>
+    public Guid? GptTypeGuid { get; set; }
+
+    /// <summary>True when this entry represents an unallocated (free) region on the disk rather than a real partition.</summary>
+    public bool IsUnallocated { get; set; }
+
     /// <summary>Used space in bytes, if available. Null if unknown.</summary>
     public ulong? UsedSpace { get; set; }
 
@@ -65,6 +71,8 @@ public class PartitionInfo
     {
         get
         {
+            if (IsUnallocated)
+                return $"Unallocated — {((long)Size).ToHumanReadableSize()}";
             var type = PartitionType ?? "Partition";
             var parts = new List<string>();
             if (!string.IsNullOrEmpty(VolumeLabel))
@@ -76,7 +84,9 @@ public class PartitionInfo
     }
 
     public override string ToString() =>
-        DiskNumber == uint.MaxValue
-            ? PartitionType ?? "Entire Disk"
-            : $"{DisplayLabel} — {((long)Size).ToHumanReadableSize()}";
+        IsUnallocated
+            ? $"Unallocated — {((long)Size).ToHumanReadableSize()}"
+            : DiskNumber == uint.MaxValue
+                ? PartitionType ?? "Entire Disk"
+                : $"{DisplayLabel} — {((long)Size).ToHumanReadableSize()}";
 }

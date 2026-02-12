@@ -24,6 +24,12 @@ public class ImageSidecar
     /// <summary>When the backup was created.</summary>
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 
+    /// <summary>"FullDisk" or "Partition". Null for legacy sidecars (treated as FullDisk).</summary>
+    public string? BackupType { get; set; }
+
+    /// <summary>When BackupType is "Partition", the partition number that was backed up.</summary>
+    public uint? SourcePartitionNumber { get; set; }
+
     /// <summary>Partition style of the source disk.</summary>
     public string PartitionStyle { get; set; } = "Unknown";
 
@@ -76,9 +82,28 @@ public class ImageSidecar
                 PartitionType = p.PartitionType,
                 UsedSpace = p.UsedSpace,
                 FreeSpace = p.FreeSpace,
+                GptTypeGuid = p.GptTypeGuid?.ToString(),
             });
         }
 
+        sidecar.BackupType = "FullDisk";
+        return sidecar;
+    }
+
+    /// <summary>
+    /// Builds a sidecar for a single-partition backup.
+    /// Records the full disk context (for disk map display) plus the backed-up partition's details.
+    /// </summary>
+    public static ImageSidecar FromPartition(
+        DiskInfo disk,
+        IEnumerable<PartitionInfo> allPartitions,
+        uint backedUpPartitionNumber,
+        uint? sectorSize = null)
+    {
+        // Store all partitions for disk-map display, but mark which one was backed up
+        var sidecar = FromDisk(disk, allPartitions, sectorSize);
+        sidecar.BackupType = "Partition";
+        sidecar.SourcePartitionNumber = backedUpPartitionNumber;
         return sidecar;
     }
 
@@ -178,4 +203,8 @@ public class SidecarPartition
     public string? PartitionType { get; set; }
     public ulong? UsedSpace { get; set; }
     public ulong? FreeSpace { get; set; }
+
+    /// <summary>Raw GPT type GUID string (e.g. "de94bba4-06d1-4d40-a16a-bfd50179d6ac" for Recovery).
+    /// Null for legacy sidecars or MBR disks.</summary>
+    public string? GptTypeGuid { get; set; }
 }

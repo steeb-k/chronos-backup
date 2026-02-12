@@ -104,7 +104,13 @@ public partial class BackupViewModel : ObservableObject
     {
         if (_diskEnumerator is not null)
         {
+            // Force full re-enumeration so the refresh button picks up
+            // any disk/partition changes.
+            await _diskEnumerator.RefreshAsync();
             AvailableDisks = await _diskEnumerator.GetDisksAsync();
+
+            // Reset selection so partition list & disk map re-draw
+            SelectedDisk = null;
         }
         LoadTargetDrives();
     }

@@ -59,6 +59,14 @@
 
                     <!-- Source image partition map (from sidecar) -->
                     <local:DiskMapControl x:Name="SourceDiskMap" Margin="0,4,0,0" />
+
+                    <!-- Source partition selector (visible when image has 2+ partitions) -->
+                    <ComboBox x:Name="SourcePartitionCombo"
+                              Header="Restore scope"
+                              HorizontalAlignment="Stretch"
+                              ItemsSource="{Binding AvailableSourcePartitions}"
+                              SelectedItem="{Binding SelectedSourcePartition, Mode=TwoWay}"
+                              Visibility="{Binding HasSourcePartitions, Converter={StaticResource BoolToVisibilityConverter}}" />
                 </StackPanel>
             </StackPanel>
 

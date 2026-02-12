@@ -39,6 +39,12 @@ public class DiskWriteHandle : IDisposable
     public string Path { get; }
     public uint SectorSize { get; set; } = 512;
 
+    /// <summary>
+    /// Optional sector offset added to every write. Used when writing to a partition
+    /// through a physical-drive handle: set this to (partitionByteOffset / SectorSize).
+    /// </summary>
+    public long BaseSectorOffset { get; set; }
+
     public DiskWriteHandle(SafeFileHandle handle, string path)
     {
         Handle = handle ?? throw new ArgumentNullException(nameof(handle));
@@ -111,7 +117,7 @@ public class DiskWriter : IDiskWriter
     {
         await Task.Run(() =>
         {
-            long byteOffset = sectorOffset * handle.SectorSize;
+            long byteOffset = (sectorOffset + handle.BaseSectorOffset) * handle.SectorSize;
             int bytesToWrite = sectorCount * (int)handle.SectorSize;
 
             if (buffer.Length < bytesToWrite)

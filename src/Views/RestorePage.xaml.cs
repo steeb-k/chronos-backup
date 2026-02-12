@@ -64,6 +64,13 @@ public sealed partial class RestorePage : Page
             SourceDiskMap.Disk = ViewModel.SourceDisk;
             SourceDiskMap.Partitions = ViewModel.SourcePartitions;
         }
+
+        if (e.PropertyName is nameof(RestoreViewModel.SelectedSourcePartition))
+        {
+            // Highlight the selected source partition on the source disk map
+            SourceDiskMap.HighlightedPartition = ViewModel.IsSinglePartitionRestore
+                ? ViewModel.SelectedSourcePartition : null;
+        }
     }
 
     private void OnBrowseImageClick(object sender, RoutedEventArgs e)
