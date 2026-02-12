@@ -22,6 +22,7 @@ public class NavigationService : INavigationService
         ["restore"] = typeof(Views.RestorePage),
         ["verify"] = typeof(Views.VerifyPage),
         ["browse"] = typeof(Views.BrowsePage),
+        ["history"] = typeof(Views.HistoryPage),
         ["options"] = typeof(Views.OptionsPage),
     };
 

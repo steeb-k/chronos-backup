@@ -30,7 +30,7 @@
                 </NavigationView.Resources>
 
                 <NavigationView.PaneHeader>
-                    <Grid Margin="8,0,8,12" HorizontalAlignment="Stretch">
+                    <Grid Margin="8,8,8,12" HorizontalAlignment="Stretch">
                         <Image x:Name="LogoLight" Source="/Assets/logoLight.png" Stretch="Uniform"
                                HorizontalAlignment="Stretch" Visibility="Collapsed" />
                         <Image x:Name="LogoDark" Source="/Assets/logoDark.png" Stretch="Uniform"
@@ -67,6 +67,11 @@
                 </NavigationView.MenuItems>
 
                 <NavigationView.FooterMenuItems>
+                    <NavigationViewItem Content="History" Tag="history">
+                        <NavigationViewItem.Icon>
+                            <FontIcon Glyph="&#xE81C;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
                     <NavigationViewItem Content="Options" Tag="options">
                         <NavigationViewItem.Icon>
                             <FontIcon Glyph="&#xE713;" />

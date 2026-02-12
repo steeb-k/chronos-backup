@@ -1,5 +1,9 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Chronos.Core.Models;
+using Microsoft.UI;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media;
 
 namespace Chronos.App.Services;
 
@@ -16,6 +20,34 @@ public class OperationHistoryEntry
     public string? ErrorMessage { get; set; }
     public long BytesProcessed { get; set; }
     public TimeSpan Duration { get; set; }
+
+    // Display helpers for UI binding (not serialized)
+    [JsonIgnore] public string StatusGlyph => Status switch
+    {
+        "Success" => "\uE73E",   // Checkmark
+        "Failed" => "\uEA39",    // Error badge
+        "Cancelled" => "\uE711", // Cancel
+        _ => "\uE946"            // Info
+    };
+
+    [JsonIgnore] public Brush StatusBrush => Status switch
+    {
+        "Success" => new SolidColorBrush(Colors.ForestGreen),
+        "Failed" => new SolidColorBrush(Colors.Crimson),
+        "Cancelled" => new SolidColorBrush(Colors.DarkGoldenrod),
+        _ => new SolidColorBrush(Colors.Gray)
+    };
+
+    [JsonIgnore] public string FormattedTimestamp =>
+        Timestamp.ToLocalTime().ToString("MMM d, yyyy  h:mm tt");
+
+    [JsonIgnore] public string FormattedDuration =>
+        Duration.TotalHours >= 1 ? Duration.ToString(@"h\:mm\:ss")
+        : Duration.TotalMinutes >= 1 ? Duration.ToString(@"m\:ss")
+        : $"{Duration.TotalSeconds:F0}s";
+
+    [JsonIgnore] public Visibility HasDestination =>
+        string.IsNullOrEmpty(DestinationPath) ? Visibility.Collapsed : Visibility.Visible;
 }
 
 /// <summary>

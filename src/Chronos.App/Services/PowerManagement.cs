@@ -29,12 +29,13 @@ internal static class PowerManagement
         var result = SetThreadExecutionState(
             EXECUTION_STATE.ES_CONTINUOUS |
             EXECUTION_STATE.ES_SYSTEM_REQUIRED |
+            EXECUTION_STATE.ES_DISPLAY_REQUIRED |
             EXECUTION_STATE.ES_AWAYMODE_REQUIRED);
 
         if (result == 0)
             Log.Warning("SetThreadExecutionState failed to prevent sleep");
         else
-            Log.Debug("System sleep prevention enabled");
+            Log.Debug("System sleep prevention enabled (including display)");
     }
 
     /// <summary>

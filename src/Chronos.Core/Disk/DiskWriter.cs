@@ -147,6 +147,10 @@ public class DiskWriter : IDiskWriter
             33 => $"The disk is being used by another process. Close any programs accessing the disk and try again.",
             112 => $"Insufficient disk space to {operation}.",
             1 => $"Invalid function when trying to {operation}. The disk may not support this operation.",
+            1117 => $"The device reported an I/O error while trying to {operation}. " +
+                    "This usually indicates a hardware problem — check that the disk is healthy, " +
+                    "cables/connections are secure, and the USB controller (if applicable) is not overloaded.",
+            1167 => $"The device is not connected. It may have been disconnected during the {operation}.",
             _ => $"Failed to {operation}. Windows error code: {errorCode}"
         };
     }

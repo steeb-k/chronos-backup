@@ -55,16 +55,26 @@
                             <RowDefinition />
                             <RowDefinition />
                             <RowDefinition />
+                            <RowDefinition />
+                            <RowDefinition />
                         </Grid.RowDefinitions>
 
                         <TextBlock Text="Version" Opacity="0.6" Grid.Row="0" />
                         <TextBlock Text="{x:Bind ViewModel.CurrentVersion, Mode=OneWay}" Grid.Row="0" Grid.Column="1" />
 
-                        <TextBlock Text="License" Opacity="0.6" Grid.Row="1" />
-                        <TextBlock Text="GPLv3" Grid.Row="1" Grid.Column="1" />
+                        <TextBlock Text="Developer" Opacity="0.6" Grid.Row="1" />
+                        <TextBlock Text="KZNJK.net" Grid.Row="1" Grid.Column="1" />
 
-                        <TextBlock Text="Runtime" Opacity="0.6" Grid.Row="2" />
-                        <TextBlock Text=".NET 10 + WinUI 3" Grid.Row="2" Grid.Column="1" />
+                        <TextBlock Text="GitHub" Opacity="0.6" Grid.Row="2" />
+                        <HyperlinkButton Content="github.com/steeb-k/chronos-backup"
+                                         NavigateUri="https://github.com/steeb-k/chronos-backup"
+                                         Padding="0" Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" />
+
+                        <TextBlock Text="License" Opacity="0.6" Grid.Row="3" />
+                        <TextBlock Text="GPLv3" Grid.Row="3" Grid.Column="1" />
+
+                        <TextBlock Text="Runtime" Opacity="0.6" Grid.Row="4" />
+                        <TextBlock Text=".NET 10 + WinUI 3" Grid.Row="4" Grid.Column="1" />
                     </Grid>
 
                     <MenuFlyoutSeparator Margin="0,4" />

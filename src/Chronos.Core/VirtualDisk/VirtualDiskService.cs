@@ -199,10 +199,11 @@ public class VirtualDiskService : IVirtualDiskService
                 };
 
                 var attachFlags = readOnly 
-                    ? VirtualDiskInterop.AttachVirtualDiskFlags.ReadOnly
+                    ? VirtualDiskInterop.AttachVirtualDiskFlags.ReadOnly | VirtualDiskInterop.AttachVirtualDiskFlags.NoSecurityDescriptor
                     : VirtualDiskInterop.AttachVirtualDiskFlags.None;
 
                 // Attach with automatic drive letter assignment
+                // NoSecurityDescriptor bypasses NTFS ACLs so users can browse locked folders
                 result = VirtualDiskInterop.AttachVirtualDisk(
                     handle,
                     IntPtr.Zero,

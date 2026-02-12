@@ -6,13 +6,15 @@ Plan for implementing the remaining Phase 1 features from `appPlan.md`. Pause/Re
 
 ## Current Status
 
-| Area | Done | Remaining |
-|------|------|-----------|
-| Backup | Full disk/partition to VHDX, VSS, compression, progress, cancel | Disk/partition clone |
-| Restore | — | Full restore engine |
-| Verification | Integrity check, SHA-256 | Filesystem consistency (optional) |
-| Browse/Mount | Interfaces defined | Mount to drive letter, file extraction |
-| UI/UX | Shell, pages, themes | Operation history, settings persistence |
+| Area | Status | Notes |
+|------|--------|-------|
+| Backup | ✅ Complete | Full disk/partition to VHDX, VSS, compression, progress, cancel |
+| Disk/Partition Clone | ✅ Complete | Dedicated ClonePage with disk/partition picker |
+| Restore | ✅ Complete | RestoreEngine with validation, progress, cancellation |
+| Verification | ✅ Integrity + SHA-256 | Filesystem consistency checks remaining (Medium priority) |
+| Browse/Mount | ✅ Complete | Mount with `NoSecurityDescriptor` for full folder access; Explorer-based extraction |
+| Settings Persistence | ✅ Complete | JSON settings, Options page with all bindings |
+| Operation History | ✅ Complete | Backend service + HistoryPage in footer nav |
 
 ---
 
@@ -102,13 +104,13 @@ Plan for implementing the remaining Phase 1 features from `appPlan.md`. Pause/Re
 
 ## 4. Verification Enhancements
 
-**Priority: Low**
+**Priority: Medium**
 
-### 4.1 Filesystem Consistency Checks (Optional)
+### 4.1 Filesystem Consistency Checks
 
 - If image is VHDX: attach read-only, run `chkdsk /scan` or equivalent
 - Or: verify NTFS/ReFS structures (e.g. MFT) are readable
-- Can defer to Phase 2 if time is limited
+- Important for validating recoverability — not just integrity
 
 ---
 
@@ -132,14 +134,14 @@ Plan for implementing the remaining Phase 1 features from `appPlan.md`. Pause/Re
 
 ## Suggested Implementation Order
 
-1. **Restore Engine** — Unblocks core restore workflows
-2. **Settings Persistence** — Quick win, improves UX
-3. **Disk/Partition Clone** — Extends backup with minimal structural change
-4. **Mount to Drive Letter** — Core browse capability
-5. **Dismount + Auto-dismount** — Needed for safe mount usage
-6. **File Extraction** — Completes browse experience
-7. **Operation History** — Nice-to-have polish
-8. **Filesystem Consistency** — Optional Phase 1 stretch goal
+1. **Restore Engine** — ✅ Complete
+2. **Settings Persistence** — ✅ Complete
+3. **Disk/Partition Clone** — ✅ Complete
+4. **Mount to Drive Letter** — ✅ Complete (with NoSecurityDescriptor for full access)
+5. **Dismount + Auto-dismount** — ✅ Complete
+6. **Operation History** — ✅ Complete (service + UI page)
+7. **File Extraction** — ✅ Resolved via Explorer-based extraction after security-bypass mount
+8. **Filesystem Consistency** — Remaining (Medium priority)
 
 ---
 

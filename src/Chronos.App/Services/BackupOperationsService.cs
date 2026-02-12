@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Chronos.Core.Imaging;
 using Chronos.Core.Models;
 using Chronos.Core.Progress;
+using Serilog;
 
 namespace Chronos.App.Services;
 
@@ -101,26 +102,62 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
 
             if (verifyAfterBackup && _verificationEngine is not null)
             {
-                StatusMessage = "Verifying image...";
-                var verifyProgress = new Progress<OperationProgress>(p =>
+                // Quick size sanity check before reading the entire image for verification.
+                // If a sidecar exists with expected allocated bytes, compare against actual file size.
+                // An image that's drastically undersized (< 75% of expected) indicates a failed/incomplete
+                // backup — no point in reading the whole file.
+                bool skipFullVerify = false;
+                try
                 {
-                    ProgressPercentage = p.PercentComplete;
-                    var statusText = $"Verifying - {p.PercentComplete:F1}%";
-                    if (p.TotalBytes > 0)
-                        statusText += $" ({FormatBytes((ulong)p.BytesProcessed)} / {FormatBytes((ulong)p.TotalBytes)})";
-                    StatusMessage = statusText;
-                });
-                var verifyReporter = new ProgressReporter(verifyProgress);
+                    var sidecar = await ImageSidecar.LoadAsync(job.DestinationPath);
+                    if (sidecar?.ExpectedAllocatedBytes is > 0)
+                    {
+                        var actualSize = new FileInfo(job.DestinationPath).Length;
+                        double ratio = (double)actualSize / sidecar.ExpectedAllocatedBytes.Value;
+                        Log.Information("Pre-verification size check: actual={Actual}, expected>={Expected}, ratio={Ratio:P1}",
+                            actualSize, sidecar.ExpectedAllocatedBytes.Value, ratio);
 
-                var verified = await _verificationEngine.VerifyImageAsync(job.DestinationPath, verifyReporter);
-
-                if (verified)
-                    StatusMessage = "Backup completed and verified successfully!";
-                else
+                        if (ratio < 0.75)
+                        {
+                            Log.Error("Image is drastically undersized: {Actual} bytes vs {Expected} expected allocated bytes ({Ratio:P1})",
+                                actualSize, sidecar.ExpectedAllocatedBytes.Value, ratio);
+                            StatusMessage = $"Backup failed: image is only {FormatBytes((ulong)actualSize)} — " +
+                                $"expected at least {FormatBytes((ulong)sidecar.ExpectedAllocatedBytes.Value)}. " +
+                                $"The disk may have encountered an I/O error during the backup.";
+                            status = "Failed";
+                            errorMessage = $"Image undersized: {actualSize:N0} bytes vs {sidecar.ExpectedAllocatedBytes.Value:N0} expected";
+                            skipFullVerify = true;
+                        }
+                    }
+                }
+                catch (Exception ex)
                 {
-                    StatusMessage = "Backup completed, but verification failed. The image may be corrupted.";
-                    status = "Failed";
-                    errorMessage = "Verification failed";
+                    Log.Warning(ex, "Pre-verification size check failed, proceeding with full verification");
+                }
+
+                if (!skipFullVerify)
+                {
+                    StatusMessage = "Verifying image...";
+                    var verifyProgress = new Progress<OperationProgress>(p =>
+                    {
+                        ProgressPercentage = p.PercentComplete;
+                        var statusText = $"Verifying - {p.PercentComplete:F1}%";
+                        if (p.TotalBytes > 0)
+                            statusText += $" ({FormatBytes((ulong)p.BytesProcessed)} / {FormatBytes((ulong)p.TotalBytes)})";
+                        StatusMessage = statusText;
+                    });
+                    var verifyReporter = new ProgressReporter(verifyProgress);
+
+                    var verified = await _verificationEngine.VerifyImageAsync(job.DestinationPath, verifyReporter);
+
+                    if (verified)
+                        StatusMessage = "Backup completed and verified successfully!";
+                    else
+                    {
+                        StatusMessage = "Backup completed, but verification failed. The image may be corrupted.";
+                        status = "Failed";
+                        errorMessage = "Verification failed";
+                    }
                 }
             }
             else

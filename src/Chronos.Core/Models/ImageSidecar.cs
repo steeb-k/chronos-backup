@@ -42,6 +42,9 @@ public class ImageSidecar
     /// <summary>Sector size of the source disk in bytes (typically 512 or 4096).</summary>
     public uint? SourceSectorSize { get; set; }
 
+    /// <summary>Expected allocated bytes that were copied to the image. Used for post-backup size validation.</summary>
+    public long? ExpectedAllocatedBytes { get; set; }
+
     /// <summary>Partition entries from the source disk.</summary>
     public List<SidecarPartition> Partitions { get; set; } = new();
 
