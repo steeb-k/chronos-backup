@@ -20,7 +20,7 @@
 #>
 
 param(
-    [string]$Version = "0.3.0",
+    [string]$Version = "0.4.0",
 
     [switch]$SkipBuild,
     [switch]$SkipInstaller
@@ -148,6 +148,98 @@ if (-not $SkipBuild) {
     Write-Host "[2/5] Skipping x64 build (--SkipBuild)" -ForegroundColor DarkGray
     Write-Host "[3/5] Skipping ARM64 build (--SkipBuild)" -ForegroundColor DarkGray
 }
+
+# Bundle PE runtime dependencies (UCRT forwarders + VC++ runtime DLLs)
+# These are required for WinPE environments where the API set schema and system DLLs are incomplete.
+# The forwarder DLLs redirect api-ms-win-crt-* imports to ucrtbase.dll, which WinPE does include.
+#
+# NOTE: Windows system DLLs required by WinUI 3 (coremessaging.dll, InputHost.dll, etc.)
+# are NOT bundled here. They are injected by the Chronos PhoenixPE plugin using
+# RequireFileEx to extract version-matched copies from the source WIM.
+# See: Projects/PhoenixPE/Applications/Backup & Imaging/Chronos.script
+function Bundle-PeRuntimeDeps {
+    param([string]$PublishDir, [string]$Arch)
+
+    if (-not (Test-Path $PublishDir)) { return }
+
+    $hostArch = if ([Environment]::Is64BitOperatingSystem) { "x64" } else { "x86" }
+    if ($Arch.ToLower() -ne $hostArch.ToLower()) {
+        Write-Host "    Skipping PE runtime deps for $Arch (host is $hostArch, cross-compile)" -ForegroundColor DarkYellow
+        Write-Host "    To support $Arch in WinPE, copy system DLLs from an $Arch system" -ForegroundColor DarkYellow
+        return
+    }
+
+    $copied = 0
+    $sys32 = Join-Path $env:SystemRoot "System32"
+    $downlevelDir = Join-Path $sys32 "downlevel"
+
+    # Copy UCRT forwarder DLLs (api-ms-win-crt-*.dll)
+    if (Test-Path $downlevelDir) {
+        $forwarders = Get-ChildItem $downlevelDir -Filter "api-ms-win-crt-*.dll" -ErrorAction SilentlyContinue
+        foreach ($dll in $forwarders) {
+            $dest = Join-Path $PublishDir $dll.Name
+            if (-not (Test-Path $dest)) {
+                Copy-Item $dll.FullName $dest -Force
+                $copied++
+            }
+        }
+    }
+
+    # Copy VC++ runtime DLLs that may not be bundled by publish
+    $vcrtDlls = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll")
+    foreach ($dllName in $vcrtDlls) {
+        $dest = Join-Path $PublishDir $dllName
+        if (-not (Test-Path $dest)) {
+            $source = Join-Path $sys32 $dllName
+            if (Test-Path $source) {
+                Copy-Item $source $dest -Force
+                $copied++
+            }
+        }
+    }
+
+    # Remove any previously-bundled Windows system DLLs that must NOT be
+    # shipped. These conflict with WinPE's own version-matched copies.
+    # Bundling them from a different Windows build causes delay-load
+    # failures (ERROR_PROC_NOT_FOUND) due to function mismatches.
+    # The PhoenixPE Chronos plugin extracts these from the source WIM instead.
+    $removeDlls = @(
+        # Core graphics (WinPE has its own matched versions)
+        "dcomp.dll", "dwmapi.dll", "d2d1.dll", "d3d11.dll", "dwrite.dll",
+        "dxgi.dll", "uxtheme.dll", "win32u.dll", "VERSION.dll",
+
+        # System DLLs now handled by the PhoenixPE plugin (RequireFileEx from WIM)
+        "kernel.appcore.dll", "powrprof.dll", "WinTypes.dll", "shcore.dll",
+        "rometadata.dll", "Microsoft.Internal.WarpPal.dll", "msvcp_win.dll",
+        "coremessaging.dll", "CoreMessagingDataModel2.dll", "InputHost.dll",
+        "ninput.dll", "windows.ui.dll", "twinapi.appcore.dll", "TextShaping.dll",
+        "TextInputFramework.dll", "bcp47langs.dll", "mscms.dll", "profapi.dll",
+        "userenv.dll", "propsys.dll", "urlmon.dll", "xmllite.dll", "iertutil.dll",
+        "UIAutomationCore.dll", "WindowsCodecs.dll"
+    )
+    $removed = 0
+    foreach ($dllName in $removeDlls) {
+        $target = Join-Path $PublishDir $dllName
+        if (Test-Path $target) {
+            Remove-Item $target -Force -ErrorAction SilentlyContinue
+            $removed++
+        }
+    }
+
+    if ($removed -gt 0) {
+        Write-Host "    Removed $removed system DLLs from $Arch (handled by PE plugin)" -ForegroundColor DarkGray
+    }
+    if ($copied -gt 0) {
+        Write-Host "    Bundled $copied runtime DLLs for $Arch" -ForegroundColor DarkGray
+    }
+}
+
+Write-Host "Bundling PE runtime dependencies..." -ForegroundColor Yellow
+$x64PublishDir_pe = Join-Path $RepoRoot "src\bin\Release\net10.0-windows10.0.19041.0\win-x64\publish"
+$arm64PublishDir_pe = Join-Path $RepoRoot "src\bin\Release\net10.0-windows10.0.19041.0\win-arm64\publish"
+Bundle-PeRuntimeDeps -PublishDir $x64PublishDir_pe -Arch "x64"
+Bundle-PeRuntimeDeps -PublishDir $arm64PublishDir_pe -Arch "ARM64"
+Write-Host "  Done." -ForegroundColor Green
 
 # Create ZIP files
 Write-Host "[4/5] Creating portable ZIP files..." -ForegroundColor Yellow

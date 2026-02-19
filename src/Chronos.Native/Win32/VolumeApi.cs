@@ -220,4 +220,46 @@ public static partial class VolumeApi
     {
         return volumeGuid.TrimEnd('\\');
     }
+
+    // --- GetVolumeInformation for filesystem detection without WMI ---
+
+    [DllImport("kernel32.dll", EntryPoint = "GetVolumeInformationW", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetVolumeInformationNative(
+        string lpRootPathName,
+        StringBuilder? lpVolumeNameBuffer,
+        uint nVolumeNameSize,
+        out uint lpVolumeSerialNumber,
+        out uint lpMaximumComponentLength,
+        out uint lpFileSystemFlags,
+        StringBuilder? lpFileSystemNameBuffer,
+        uint nFileSystemNameSize);
+
+    /// <summary>
+    /// Queries volume information (filesystem name, volume label) for a given root path.
+    /// Accepts drive letters ("C:\\") or volume GUID paths ("\\\\?\\Volume{GUID}\\").
+    /// Returns (fileSystem, volumeLabel) or (null, null) on failure.
+    /// </summary>
+    public static (string? FileSystem, string? VolumeLabel) GetVolumeInformation(string rootPath)
+    {
+        // Ensure trailing backslash (required by the API)
+        if (!rootPath.EndsWith('\\'))
+            rootPath += "\\";
+
+        var volumeName = new StringBuilder(261);
+        var fsName = new StringBuilder(261);
+
+        bool ok = GetVolumeInformationNative(
+            rootPath,
+            volumeName, (uint)volumeName.Capacity,
+            out _, out _, out _,
+            fsName, (uint)fsName.Capacity);
+
+        if (!ok)
+            return (null, null);
+
+        var fs = fsName.Length > 0 ? fsName.ToString() : null;
+        var label = volumeName.Length > 0 ? volumeName.ToString() : null;
+        return (fs, label);
+    }
 }

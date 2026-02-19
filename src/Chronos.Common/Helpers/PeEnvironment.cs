@@ -172,7 +172,18 @@ public static class PeEnvironment
     {
         try
         {
-            return ProbeService("Winmgmt");
+            // Registry key alone is unreliable -- PhoenixPE may have the key
+            // but the WMI COM infrastructure crashes at the native level.
+            // Check both registry AND that wbemprox.dll exists for COM activation.
+            if (!ProbeService("Winmgmt"))
+                return false;
+
+            // wbemprox.dll is the COM proxy for WMI; without it, WMI COM calls crash
+            var sysRoot = Environment.GetEnvironmentVariable("SystemRoot") ?? @"C:\Windows";
+            if (!File.Exists(Path.Combine(sysRoot, "System32", "wbem", "wbemprox.dll")))
+                return false;
+
+            return true;
         }
         catch
         {

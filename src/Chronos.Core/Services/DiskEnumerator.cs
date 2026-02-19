@@ -4,6 +4,7 @@ using Chronos.Native.Win32;
 using Serilog;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 
 namespace Chronos.Core.Services;
 
@@ -70,10 +71,30 @@ public class DiskEnumerator : IDiskEnumerator
         return disks.FirstOrDefault(d => d.DiskNumber == diskNumber);
     }
 
+    private static void DiagLog(string msg)
+    {
+        try
+        {
+            var path = System.IO.Path.Combine(AppContext.BaseDirectory, "chronos-startup.log");
+            System.IO.File.AppendAllText(path, msg + "\n");
+        }
+        catch { }
+    }
+
     public async Task RefreshAsync()
     {
-        _cachedDisks = await EnumerateDisksAsync();
-        _cachedPartitions.Clear();
+        try
+        {
+            DiagLog("  DiskEnumerator.RefreshAsync: starting...");
+            _cachedDisks = await EnumerateDisksAsync();
+            DiagLog("  DiskEnumerator.RefreshAsync: got " + _cachedDisks.Count + " disks");
+            _cachedPartitions.Clear();
+        }
+        catch (Exception ex)
+        {
+            DiagLog("  DiskEnumerator.RefreshAsync FAILED: " + ex.GetType().Name + ": " + ex.Message);
+            throw;
+        }
     }
 
     public async Task<List<PartitionInfo>> GetUnallocatedSpacesAsync(uint diskNumber)
@@ -156,13 +177,33 @@ public class DiskEnumerator : IDiskEnumerator
     {
         return await Task.Run(() =>
         {
-            var disks = new List<DiskInfo>();
+            DiagLog("  EnumerateDisksAsync: IsWinPE=" + PeEnvironment.IsWinPE + ", HasWmi=" + PeEnvironment.Capabilities.HasWmi);
 
-            try
+            // Use IOCTL-only path when WMI is truly unavailable.
+            // Note: PhoenixPE has working WMI, so we use HasWmi (not IsWinPE) as the gate.
+            if (!PeEnvironment.Capabilities.HasWmi)
             {
-                // Use WMI to get physical disks
-                using (var searcher = new System.Management.ManagementObjectSearcher(
-                    "SELECT * FROM Win32_DiskDrive"))
+                DiagLog("  EnumerateDisksAsync: using IOCTL path (no WMI)");
+                return EnumerateDisksViaIoctl();
+            }
+
+            DiagLog("  EnumerateDisksAsync: using WMI path");
+            return EnumerateDisksViaWmi();
+        });
+    }
+
+    /// <summary>
+    /// WMI disk enumeration - isolated in a NoInlining method so the JIT does not
+    /// load System.Management.dll when this method is never called (e.g. WinPE).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private List<DiskInfo> EnumerateDisksViaWmi()
+    {
+        var disks = new List<DiskInfo>();
+        try
+        {
+            using (var searcher = new System.Management.ManagementObjectSearcher(
+                "SELECT * FROM Win32_DiskDrive"))
                 {
                     foreach (var disk in searcher.Get())
                     {
@@ -196,21 +237,17 @@ public class DiskEnumerator : IDiskEnumerator
             }
 
             return disks;
-        });
     }
 
-    private async Task<List<PartitionInfo>> EnumeratePartitionsAsync(uint diskNumber)
+    /// <summary>
+    /// WMI partition enumeration - isolated in a NoInlining method so the JIT does not
+    /// load System.Management.dll when this method is never called (e.g. WinPE).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private List<PartitionInfo> EnumeratePartitionsViaWmi(uint diskNumber, List<DiskApi.DriveLayoutEntry> driveLayout)
     {
-        return await Task.Run(() =>
-        {
-            var partitions = new List<PartitionInfo>();
-
-            // First, get the real drive layout from IOCTL to know exact device partition numbers.
-            // WMI may skip certain partition types (MSR, EFI) making its index unreliable.
-            var driveLayout = Chronos.Native.Win32.DiskApi.GetDriveLayout(diskNumber);
-            Log.Debug("Drive layout for disk {Disk}: {Count} partitions from IOCTL", diskNumber, driveLayout.Count);
-
-            try
+        var partitions = new List<PartitionInfo>();
+        try
             {
                 // Use WMI to get partitions on this disk
                 using (var searcher = new System.Management.ManagementObjectSearcher(
@@ -323,9 +360,44 @@ public class DiskEnumerator : IDiskEnumerator
             EnrichPartitionsWithVolumeMetadata(partitions);
 
             return partitions;
+    }
+
+    private async Task<List<PartitionInfo>> EnumeratePartitionsAsync(uint diskNumber)
+    {
+        return await Task.Run(() =>
+        {
+            var partitions = new List<PartitionInfo>();
+
+            var driveLayout = Chronos.Native.Win32.DiskApi.GetDriveLayout(diskNumber);
+            Log.Debug("Drive layout for disk {Disk}: {Count} partitions from IOCTL", diskNumber, driveLayout.Count);
+
+            // Use IOCTL-only path when WMI is truly unavailable.
+            if (!PeEnvironment.Capabilities.HasWmi)
+            {
+                Log.Information("Using IOCTL-only partition enumeration for disk {Disk} (no WMI)", diskNumber);
+                foreach (var entry in driveLayout)
+                {
+                    var partType = ClassifyGptTypeGuid(entry.GptTypeGuid);
+                    partitions.Add(new PartitionInfo
+                    {
+                        DiskNumber = diskNumber,
+                        PartitionNumber = entry.PartitionNumber,
+                        Size = (ulong)entry.PartitionLength,
+                        Offset = (ulong)entry.StartingOffset,
+                        PartitionType = partType,
+                        GptTypeGuid = entry.GptTypeGuid != Guid.Empty ? entry.GptTypeGuid : null,
+                    });
+                }
+                ResolveVolumeGuidPaths(diskNumber, partitions);
+                EnrichPartitionsWithVolumeMetadataNoWmi(partitions);
+                return partitions;
+            }
+
+            return EnumeratePartitionsViaWmi(diskNumber, driveLayout);
         });
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static uint? TryGetUint(System.Management.ManagementBaseObject obj, string propertyName)
     {
         try
@@ -357,6 +429,7 @@ public class DiskEnumerator : IDiskEnumerator
     /// Gets the volume path (e.g. \\.\C:) and drive letter for a partition via Win32_LogicalDiskToPartition.
     /// Returns (null, null) if the partition has no drive letter.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static (string? VolumePath, string? DriveLetter) GetVolumePathAndLetterForPartition(System.Management.ManagementBaseObject partition)
     {
         try
@@ -403,6 +476,7 @@ public class DiskEnumerator : IDiskEnumerator
     /// <summary>
     /// Classifies partition type from WMI Win32_DiskPartition fields.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static string? ClassifyPartitionType(System.Management.ManagementBaseObject partition)
     {
         try
@@ -440,9 +514,66 @@ public class DiskEnumerator : IDiskEnumerator
     }
 
     /// <summary>
+    /// Enriches partitions with volume metadata using DriveInfo + GetVolumeInformation (no WMI).
+    /// Used in WinPE where WMI is unavailable.
+    /// </summary>
+    private static void EnrichPartitionsWithVolumeMetadataNoWmi(List<PartitionInfo> partitions)
+    {
+        foreach (var part in partitions)
+        {
+            if (string.IsNullOrEmpty(part.VolumePath))
+                continue;
+
+            try
+            {
+                // Try DriveInfo first for drive-letter volumes
+                if (!string.IsNullOrEmpty(part.DriveLetter))
+                {
+                    var di = new DriveInfo(part.DriveLetter[..1]);
+                    if (di.IsReady)
+                    {
+                        part.FileSystem = di.DriveFormat;
+                        part.VolumeLabel = string.IsNullOrWhiteSpace(di.VolumeLabel) ? null : di.VolumeLabel;
+                        part.UsedSpace = (ulong)(di.TotalSize - di.TotalFreeSpace);
+                        part.FreeSpace = (ulong)di.TotalFreeSpace;
+                        continue;
+                    }
+                }
+
+                // Fallback: GetVolumeInformation for GUID-path volumes without drive letters.
+                // This is a pure Win32 API that works in WinPE without WMI.
+                var volPath = part.VolumePath;
+                var (fs, label) = VolumeApi.GetVolumeInformation(volPath);
+                if (fs != null)
+                    part.FileSystem = fs;
+                if (label != null)
+                    part.VolumeLabel = label;
+
+                // GetDiskFreeSpace for usage data (needs root path with trailing backslash)
+                var rootPath = volPath.EndsWith('\\') ? volPath : volPath + "\\";
+                if (VolumeApi.GetDiskFreeSpace(rootPath,
+                    out uint sectorsPerCluster, out uint bytesPerSector,
+                    out uint freeClusters, out uint totalClusters))
+                {
+                    ulong clusterSize = (ulong)sectorsPerCluster * bytesPerSector;
+                    ulong totalBytes = (ulong)totalClusters * clusterSize;
+                    ulong freeBytes = (ulong)freeClusters * clusterSize;
+                    part.FreeSpace = freeBytes;
+                    part.UsedSpace = totalBytes > freeBytes ? totalBytes - freeBytes : 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Failed to enrich partition {Part}: {Error}", part.PartitionNumber, ex.Message);
+            }
+        }
+    }
+
+    /// <summary>
     /// Enriches partitions with volume metadata (label, filesystem, used/free space)
     /// by querying DriveInfo or WMI Win32_Volume for each volume path.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static void EnrichPartitionsWithVolumeMetadata(List<PartitionInfo> partitions)
     {
         foreach (var part in partitions)
@@ -480,6 +611,7 @@ public class DiskEnumerator : IDiskEnumerator
     /// Queries WMI Win32_Volume for a volume matching the given device path.
     /// Works for \\?\Volume{GUID} paths that don't have drive letters.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static void EnrichFromWmiVolume(PartitionInfo part)
     {
         try
@@ -529,6 +661,7 @@ public class DiskEnumerator : IDiskEnumerator
     /// Queries MSFT_Disk from the Storage WMI namespace to determine partition style.
     /// Falls back to IOCTL drive layout heuristics if WMI is unavailable.
     /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static DiskPartitionStyle GetPartitionStyle(uint diskNumber)
     {
         // Try WMI first
@@ -589,13 +722,20 @@ public class DiskEnumerator : IDiskEnumerator
             var geo = DiskApi.GetDiskGeometry(idx);
             if (geo is null) continue;
 
-            // Try to determine partition style from drive layout
+            // Determine partition style from drive layout (GPT vs MBR)
             var layout = DiskApi.GetDriveLayout(idx);
             var style = DiskPartitionStyle.Unknown;
+            if (layout.Any(e => e.GptTypeGuid != Guid.Empty))
+                style = DiskPartitionStyle.GPT;
+            else if (layout.Count > 0)
+                style = DiskPartitionStyle.MBR;
+
             string model = $"Disk {idx}";
 
-            // Guess media type from MEDIA_TYPE
-            bool isRemovable = geo.Value.MediaType == 12; // RemovableMedia
+            // Try to get disk model via IOCTL_STORAGE_QUERY_PROPERTY
+            var storageModel = DiskApi.GetDiskModelViaIoctl(idx);
+            if (!string.IsNullOrWhiteSpace(storageModel))
+                model = storageModel.Trim();
 
             disks.Add(new DiskInfo
             {

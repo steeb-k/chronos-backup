@@ -119,7 +119,7 @@ public partial class BackupViewModel : ObservableObject
     private void LoadTargetDrives()
     {
         var drives = DriveInfo.GetDrives()
-            .Where(d => d.IsReady && d.DriveType == DriveType.Fixed)
+            .Where(d => d.IsReady && (d.DriveType == DriveType.Fixed || d.DriveType == DriveType.Removable))
             .Select(d => new TargetDriveInfo
             {
                 DriveLetter = d.Name.TrimEnd('\\'),

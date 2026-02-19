@@ -481,6 +481,120 @@ if ($missingNative.Count -eq 0) {
 }
 
 # ---------------------------------------------------------------------------
+Write-Section "Native DLL Load Probe (LoadLibraryEx)"
+# ---------------------------------------------------------------------------
+# This directly calls the Windows loader on key DLLs to determine which one
+# actually fails when the OS tries to resolve transitive dependencies.
+
+Write-Host "  Using LoadLibraryEx to probe each critical native DLL..." -ForegroundColor DarkGray
+Write-Host ""
+
+$loadLibType = @"
+using System;
+using System.Runtime.InteropServices;
+using System.ComponentModel;
+public class NativeLoader {
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern IntPtr LoadLibraryEx(string lpFileName, IntPtr hFile, uint dwFlags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool FreeLibrary(IntPtr hModule);
+
+    public static string TryLoad(string path) {
+        IntPtr h = LoadLibraryEx(path, IntPtr.Zero, 0);
+        if (h != IntPtr.Zero) {
+            FreeLibrary(h);
+            return null;
+        }
+        int err = Marshal.GetLastWin32Error();
+        return new Win32Exception(err).Message + " (0x" + err.ToString("X") + ")";
+    }
+}
+"@
+
+try {
+    Add-Type -TypeDefinition $loadLibType -ErrorAction Stop
+} catch {
+    # Type may already be loaded from a previous run
+    if ($_.Exception.Message -notmatch "already exists") {
+        Write-Host "  Could not compile P/Invoke helper: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# Probe DLLs in order: VC++ runtime, UCRT, system deps, then WinAppSDK natives
+$probeDlls = @(
+    # VC++ runtime (in app folder)
+    @{ Name = "vcruntime140.dll";                         Path = (Join-Path $ChronosPath "vcruntime140.dll") },
+    @{ Name = "vcruntime140_1.dll";                       Path = (Join-Path $ChronosPath "vcruntime140_1.dll") },
+    @{ Name = "msvcp140.dll";                             Path = (Join-Path $ChronosPath "msvcp140.dll") },
+
+    # UCRT base (in System32 or app folder)
+    @{ Name = "ucrtbase.dll";                             Path = "$env:SystemRoot\System32\ucrtbase.dll" },
+
+    # UCRT forwarders (in app folder)
+    @{ Name = "api-ms-win-crt-runtime-l1-1-0.dll";       Path = (Join-Path $ChronosPath "api-ms-win-crt-runtime-l1-1-0.dll") },
+    @{ Name = "api-ms-win-crt-heap-l1-1-0.dll";          Path = (Join-Path $ChronosPath "api-ms-win-crt-heap-l1-1-0.dll") },
+    @{ Name = "api-ms-win-crt-stdio-l1-1-0.dll";         Path = (Join-Path $ChronosPath "api-ms-win-crt-stdio-l1-1-0.dll") },
+    @{ Name = "api-ms-win-crt-string-l1-1-0.dll";        Path = (Join-Path $ChronosPath "api-ms-win-crt-string-l1-1-0.dll") },
+    @{ Name = "api-ms-win-crt-math-l1-1-0.dll";          Path = (Join-Path $ChronosPath "api-ms-win-crt-math-l1-1-0.dll") },
+
+    # System DLLs that WinAppSDK needs (may be missing from PE System32)
+    @{ Name = "kernel.appcore.dll (appmodel APIs)";       Path = "$env:SystemRoot\System32\kernel.appcore.dll" },
+    @{ Name = "powrprof.dll (power APIs)";                Path = "$env:SystemRoot\System32\powrprof.dll" },
+    @{ Name = "WinTypes.dll (WinRT type resolution)";     Path = "$env:SystemRoot\System32\WinTypes.dll" },
+    @{ Name = "shcore.dll (scaling/feature staging)";      Path = "$env:SystemRoot\System32\shcore.dll" },
+    @{ Name = "rometadata.dll (WinRT metadata)";          Path = "$env:SystemRoot\System32\rometadata.dll" },
+    @{ Name = "dcomp.dll (DirectComposition)";            Path = "$env:SystemRoot\System32\dcomp.dll" },
+    @{ Name = "dwmapi.dll (DWM)";                         Path = "$env:SystemRoot\System32\dwmapi.dll" },
+    @{ Name = "d2d1.dll (Direct2D)";                      Path = "$env:SystemRoot\System32\d2d1.dll" },
+    @{ Name = "d3d11.dll (Direct3D 11)";                  Path = "$env:SystemRoot\System32\d3d11.dll" },
+    @{ Name = "dwrite.dll (DirectWrite)";                  Path = "$env:SystemRoot\System32\dwrite.dll" },
+    @{ Name = "dxgi.dll (DXGI)";                          Path = "$env:SystemRoot\System32\dxgi.dll" },
+    @{ Name = "coremessaging.dll (input/messaging)";      Path = "$env:SystemRoot\System32\coremessaging.dll" },
+    @{ Name = "ninput.dll (pointer input)";               Path = "$env:SystemRoot\System32\ninput.dll" },
+    @{ Name = "windows.ui.dll (Windows.UI runtime)";      Path = "$env:SystemRoot\System32\windows.ui.dll" },
+    @{ Name = "twinapi.appcore.dll (app core)";           Path = "$env:SystemRoot\System32\twinapi.appcore.dll" },
+    @{ Name = "bcp47langs.dll (language tags)";           Path = "$env:SystemRoot\System32\bcp47langs.dll" },
+    @{ Name = "WindowsCodecs.dll (WIC)";                  Path = "$env:SystemRoot\System32\WindowsCodecs.dll" },
+    @{ Name = "xmllite.dll (XML parser)";                 Path = "$env:SystemRoot\System32\xmllite.dll" },
+
+    # WinAppSDK native DLLs (in app folder) - test these LAST
+    @{ Name = "microsoft.internal.frameworkudk.dll";      Path = (Join-Path $ChronosPath "microsoft.internal.frameworkudk.dll") },
+    @{ Name = "Microsoft.WindowsAppRuntime.Bootstrap.dll"; Path = (Join-Path $ChronosPath "Microsoft.WindowsAppRuntime.Bootstrap.dll") },
+    @{ Name = "Microsoft.WindowsAppRuntime.dll";          Path = (Join-Path $ChronosPath "Microsoft.WindowsAppRuntime.dll") },
+    @{ Name = "Microsoft.ui.xaml.dll";                    Path = (Join-Path $ChronosPath "Microsoft.ui.xaml.dll") }
+)
+
+$loadFailed = @()
+foreach ($entry in $probeDlls) {
+    if (-not (Test-Path $entry.Path)) {
+        Write-Host "  [SKIP] $($entry.Name) -- file not found at path" -ForegroundColor Yellow
+        continue
+    }
+    $err = [NativeLoader]::TryLoad($entry.Path)
+    if ($null -eq $err) {
+        Write-Host "  [LOAD] $($entry.Name) -- OK" -ForegroundColor Green
+    } else {
+        Write-Host "  [FAIL] $($entry.Name) -- $err" -ForegroundColor Red
+        $loadFailed += $entry.Name
+    }
+}
+
+if ($loadFailed.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  DLLs that failed LoadLibraryEx:" -ForegroundColor Red
+    foreach ($n in $loadFailed) {
+        Write-Host "    X $n" -ForegroundColor Red
+    }
+    Write-Host ""
+    Write-Host "  Tip: The FIRST DLL that fails is usually the root cause." -ForegroundColor Yellow
+    Write-Host "  Its dependencies are what is actually missing from the PE." -ForegroundColor Yellow
+} else {
+    Write-Host ""
+    Write-Host "  All probed DLLs loaded successfully." -ForegroundColor Green
+}
+
+# ---------------------------------------------------------------------------
 Write-Section "Services Summary"
 # ---------------------------------------------------------------------------
 

@@ -25,8 +25,16 @@ public sealed partial class RestorePage : Page
 
         this.Loaded += async (s, e) =>
         {
-            if (ViewModel.AvailableDisks.Count == 0)
-                await ViewModel.LoadDisksCommand.ExecuteAsync(null);
+            try
+            {
+                if (ViewModel.AvailableDisks.Count == 0)
+                    await ViewModel.LoadDisksCommand.ExecuteAsync(null);
+            }
+            catch (Exception ex)
+            {
+                Program.Log("  RestorePage.Loaded FAILED: " + ex.GetType().Name + ": " + ex.Message);
+                Program.FlushLog();
+            }
         };
     }
 

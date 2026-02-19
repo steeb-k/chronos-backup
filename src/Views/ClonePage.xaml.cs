@@ -21,8 +21,16 @@ public sealed partial class ClonePage : Page
 
         this.Loaded += async (s, e) =>
         {
-            if (ViewModel.AvailableDisks.Count == 0)
-                await ViewModel.LoadDisksCommand.ExecuteAsync(null);
+            try
+            {
+                if (ViewModel.AvailableDisks.Count == 0)
+                    await ViewModel.LoadDisksCommand.ExecuteAsync(null);
+            }
+            catch (Exception ex)
+            {
+                Program.Log("  ClonePage.Loaded FAILED: " + ex.GetType().Name + ": " + ex.Message);
+                Program.FlushLog();
+            }
         };
     }
 

@@ -269,4 +269,78 @@ public static partial class DiskApi
         /// <summary>MEDIA_TYPE enum value (11 = FixedMedia, 12 = RemovableMedia).</summary>
         public int MediaType;
     }
+
+    // --- IOCTL_STORAGE_QUERY_PROPERTY for disk model name ---
+
+    private const uint IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400;
+
+    /// <summary>
+    /// Queries the disk model/product string via IOCTL_STORAGE_QUERY_PROPERTY (StorageDeviceProperty).
+    /// Returns null if the query fails or no model is available.
+    /// Works in WinPE without WMI.
+    /// </summary>
+    public static string? GetDiskModelViaIoctl(uint diskIndex)
+    {
+        string diskPath = $"\\\\.\\PhysicalDrive{diskIndex}";
+        using var handle = CreateFile(diskPath, 0, // 0 = no access needed for property query
+            FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+        if (handle.IsInvalid)
+            return null;
+
+        // STORAGE_PROPERTY_QUERY: PropertyId=0 (StorageDeviceProperty), QueryType=0 (PropertyStandardQuery)
+        int querySize = 12; // 3 x uint32
+        IntPtr queryPtr = Marshal.AllocHGlobal(querySize);
+        int outputSize = 1024;
+        IntPtr outputPtr = Marshal.AllocHGlobal(outputSize);
+        try
+        {
+            Marshal.WriteInt32(queryPtr, 0, 0); // PropertyId = StorageDeviceProperty
+            Marshal.WriteInt32(queryPtr, 4, 0); // QueryType = PropertyStandardQuery
+            Marshal.WriteInt32(queryPtr, 8, 0); // AdditionalParameters
+
+            bool ok = DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY,
+                queryPtr, (uint)querySize, outputPtr, (uint)outputSize,
+                out uint bytesReturned, IntPtr.Zero);
+
+            if (!ok || bytesReturned < 64)
+                return null;
+
+            // STORAGE_DEVICE_DESCRIPTOR layout:
+            //  0: uint Version
+            //  4: uint Size
+            //  8: byte DeviceType
+            //  9: byte DeviceTypeModifier
+            // 10: byte RemovableMedia
+            // 11: byte CommandQueueing
+            // 12: uint VendorIdOffset
+            // 16: uint ProductIdOffset
+            // 20: uint ProductRevisionOffset
+            // 24: uint SerialNumberOffset
+            // ...
+            uint vendorOffset = (uint)Marshal.ReadInt32(outputPtr, 12);
+            uint productOffset = (uint)Marshal.ReadInt32(outputPtr, 16);
+
+            string? vendor = null;
+            string? product = null;
+
+            if (vendorOffset > 0 && vendorOffset < bytesReturned)
+                vendor = Marshal.PtrToStringAnsi(IntPtr.Add(outputPtr, (int)vendorOffset))?.Trim();
+            if (productOffset > 0 && productOffset < bytesReturned)
+                product = Marshal.PtrToStringAnsi(IntPtr.Add(outputPtr, (int)productOffset))?.Trim();
+
+            if (!string.IsNullOrWhiteSpace(vendor) && !string.IsNullOrWhiteSpace(product))
+                return vendor + " " + product;
+            if (!string.IsNullOrWhiteSpace(product))
+                return product;
+            if (!string.IsNullOrWhiteSpace(vendor))
+                return vendor;
+            return null;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(queryPtr);
+            Marshal.FreeHGlobal(outputPtr);
+        }
+    }
 }

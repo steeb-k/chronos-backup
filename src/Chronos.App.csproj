@@ -9,9 +9,9 @@
         <OutputType>WinExe</OutputType>
 
         <!-- Version (synced from version.json via sync-version.ps1) -->
-        <Version>0.3.0</Version>
-        <AssemblyVersion>0.3.0.0</AssemblyVersion>
-        <FileVersion>0.3.0.0</FileVersion>
+        <Version>0.4.0</Version>
+        <AssemblyVersion>0.4.0.0</AssemblyVersion>
+        <FileVersion>0.4.0.0</FileVersion>
 
         <!-- WinUI 3 -->
         <UseWinUI>true</UseWinUI>
@@ -20,6 +20,9 @@
         
         <!-- Ensure WindowsAppSDK binaries are correctly included in self-contained deployment -->
         <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+
+        <!-- Use custom Program.cs entry point instead of auto-generated Main() -->
+        <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
 
         <!-- Project Options -->
         <Nullable>enable</Nullable>
@@ -46,14 +49,18 @@
     <!-- Explicitly include only our App source files -->
     <ItemGroup>
         <Compile Include="Imports.cs" />
+        <Compile Include="Program.cs" />
         <Compile Include="App.xaml.cs" />
         <Compile Include="MainWindow.xaml.cs" />
         <Compile Include="Views\**\*.cs" />
+        <Compile Include="Controls\**\*.cs" />
+        <Compile Include="Diagnostics\**\*.cs" />
         <Compile Include="Chronos.App\**\*.cs" />
     </ItemGroup>
     <ItemGroup>
         <Page Include="MainWindow.xaml" />
         <Page Include="Views\**\*.xaml" />
+        <Page Include="Controls\**\*.xaml" />
     </ItemGroup>
     <ItemGroup>
         <ApplicationDefinition Include="App.xaml" />

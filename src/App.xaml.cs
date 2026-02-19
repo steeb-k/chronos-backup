@@ -48,9 +48,45 @@ public partial class App : Application
 
     public App()
     {
-        ConfigureLogging();
-        this.InitializeComponent();
-        Services = ConfigureServices();
+        System.Diagnostics.Debug.WriteLine("[Chronos] App() ctor start");
+        try
+        {
+            ConfigureLogging();
+            System.Diagnostics.Debug.WriteLine("[Chronos] ConfigureLogging OK");
+        }
+        catch (Exception ex)
+        {
+            System.IO.File.AppendAllText(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "chronos-startup.log"),
+                $"\nApp.ConfigureLogging FAILED: {ex}\n");
+            // Continue without Serilog
+        }
+
+        try
+        {
+            this.InitializeComponent();
+            System.Diagnostics.Debug.WriteLine("[Chronos] InitializeComponent OK");
+        }
+        catch (Exception ex)
+        {
+            System.IO.File.AppendAllText(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "chronos-startup.log"),
+                $"\nApp.InitializeComponent FAILED: {ex}\n");
+            throw;
+        }
+
+        try
+        {
+            Services = ConfigureServices();
+            System.Diagnostics.Debug.WriteLine("[Chronos] ConfigureServices OK");
+        }
+        catch (Exception ex)
+        {
+            System.IO.File.AppendAllText(
+                System.IO.Path.Combine(AppContext.BaseDirectory, "chronos-startup.log"),
+                $"\nApp.ConfigureServices FAILED: {ex}\n");
+            throw;
+        }
     }
 
     private static void ConfigureLogging()
@@ -74,22 +110,57 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs e)
     {
-        _window = new MainWindow();
-        MainWindow = _window;
-        
-        // Hook up window closing event to dismount VHDXs
-        _window.Closed += OnMainWindowClosed;
-        
-        _window.Activate();
+        Program.Log("");
+        Program.Log("=== OnLaunched entered ===");
+        Program.FlushLog();
+
+        try
+        {
+            Program.Log("  Creating MainWindow...");
+            Program.FlushLog();
+            _window = new MainWindow();
+            MainWindow = _window;
+            Program.Log("  MainWindow created OK");
+            Program.FlushLog();
+
+            // Hook up window closing event to dismount VHDXs
+            _window.Closed += OnMainWindowClosed;
+
+            Program.Log("  Calling _window.Activate()...");
+            Program.FlushLog();
+            _window.Activate();
+            Program.Log("  Window activated OK");
+            Program.FlushLog();
+        }
+        catch (Exception ex)
+        {
+            Program.Log("");
+            Program.Log("=== OnLaunched FAILED ===");
+            Program.Log(ex.ToString());
+            Program.FlushLog();
+            throw;
+        }
 
         // Apply saved theme to the root element
-        ApplyStartupTheme();
+        try
+        {
+            ApplyStartupTheme();
+            Program.Log("  ApplyStartupTheme OK");
+        }
+        catch (Exception ex)
+        {
+            Program.Log("  ApplyStartupTheme FAILED: " + ex.Message);
+        }
+        Program.FlushLog();
 
         // Skip update checks in PE environments (no network, no persistent install)
         if (!PeEnvironment.IsWinPE)
         {
             _ = CheckForUpdatesOnStartupAsync();
         }
+
+        Program.Log("  OnLaunched complete");
+        Program.FlushLog();
     }
 
     private static async Task CheckForUpdatesOnStartupAsync()

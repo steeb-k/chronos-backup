@@ -13,19 +13,68 @@ namespace Chronos.Core.VSS;
 /// </summary>
 public sealed class VssService : IVssService
 {
+    /// <summary>
+    /// Last error details from IsVssAvailable() — useful for diagnostics.
+    /// </summary>
+    public string? LastAvailabilityError { get; private set; }
+
     public bool IsVssAvailable()
     {
+        LastAvailabilityError = null;
+
+        // 1. Check that vssapi.dll exists at all
+        try
+        {
+            var sysRoot = Environment.GetEnvironmentVariable("SystemRoot") ?? @"C:\Windows";
+            var vssApiPath = Path.Combine(sysRoot, "System32", "vssapi.dll");
+            if (!File.Exists(vssApiPath))
+            {
+                LastAvailabilityError = $"vssapi.dll not found at {vssApiPath}";
+                Log.Debug("VSS unavailable: {Error}", LastAvailabilityError);
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            LastAvailabilityError = $"Failed to check vssapi.dll: {ex.Message}";
+            return false;
+        }
+
+        // 2. Try to create VSS backup components (the real test)
         try
         {
             VssNative.CreateVssBackupComponents(out IVssBackupComponents vss);
             if (vss != null)
+            {
                 Marshal.ReleaseComObject(vss);
-            return true;
+                return true;
+            }
+            else
+            {
+                LastAvailabilityError = "CreateVssBackupComponents returned null";
+                Log.Debug("VSS unavailable: {Error}", LastAvailabilityError);
+                return false;
+            }
         }
-        catch
+        catch (DllNotFoundException ex)
         {
-            return false;
+            LastAvailabilityError = $"VssApi.dll could not be loaded: {ex.Message}";
         }
+        catch (EntryPointNotFoundException ex)
+        {
+            LastAvailabilityError = $"CreateVssBackupComponents not found in VssApi.dll: {ex.Message}";
+        }
+        catch (COMException ex)
+        {
+            LastAvailabilityError = $"COM error 0x{ex.HResult:X8}: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            LastAvailabilityError = $"{ex.GetType().Name}: {ex.Message} (HR=0x{ex.HResult:X8})";
+        }
+
+        Log.Debug("VSS unavailable: {Error}", LastAvailabilityError);
+        return false;
     }
 
     public async Task<IVssSnapshotSet> CreateSnapshotSetAsync(IReadOnlyList<string> volumePaths, CancellationToken cancellationToken = default, IProgress<string>? progress = null)
