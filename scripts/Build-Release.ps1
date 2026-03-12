@@ -48,6 +48,70 @@ if (-not (Test-Path $DistDir)) {
     New-Item -ItemType Directory -Path $DistDir | Out-Null
 }
 
+# Sign files with Azure Artifact Signing (if metadata and tools exist). Call before ZIP/installer so packaged content is signed.
+# Returns $true if signing was skipped or all signings succeeded; $false if any signing failed.
+function Sign-WithArtifactSigning {
+    param([string[]]$PathsToSign)
+    $MetadataPath = if ($env:ARTIFACT_SIGNING_METADATA) { $env:ARTIFACT_SIGNING_METADATA } else { Join-Path $RepoRoot "artifact-signing-metadata.json" }
+    if (-not (Test-Path $MetadataPath)) { return $true }
+
+    $SignToolExe = $env:SIGNTOOL_PATH
+    if (-not $SignToolExe -or -not (Test-Path $SignToolExe)) {
+        $KitsBin = "C:\Program Files (x86)\Windows Kits\10\bin"
+        if (Test-Path $KitsBin) {
+            $Latest = Get-ChildItem $KitsBin -Directory | Where-Object { $_.Name -match "^\d+\.\d+\.\d+" } | Sort-Object { [version]($_.Name -replace "^(\d+\.\d+\.\d+).*", '$1') } -Descending | Select-Object -First 1
+            if ($Latest) {
+                $Candidate = Join-Path (Join-Path $KitsBin $Latest.Name) "x64\signtool.exe"
+                if (Test-Path $Candidate) { $SignToolExe = $Candidate }
+            }
+        }
+    }
+    if (-not $SignToolExe) {
+        $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+        if ($cmd) { $SignToolExe = $cmd.Source }
+    }
+
+    $DlibPath = $env:ARTIFACT_SIGNING_DLIB
+    if (-not $DlibPath -or -not (Test-Path $DlibPath)) {
+        $SearchRoots = @(
+            "$env:LOCALAPPDATA\Microsoft\MicrosoftArtifactSigningClientTools",
+            "$env:LOCALAPPDATA\Microsoft\ArtifactSigningTools",
+            "$env:LOCALAPPDATA\Microsoft\TrustedSigningClientTools",
+            "C:\ProgramData\Microsoft\MicrosoftTrustedSigningClientTools",
+            "C:\Program Files\Microsoft\Azure Artifact Signing Client Tools",
+            "C:\Program Files (x86)\Microsoft\Azure Artifact Signing Client Tools",
+            "C:\Program Files (x86)\Windows Kits\AzureCodeSigning"
+        )
+        foreach ($root in $SearchRoots) {
+            if (Test-Path $root) {
+                $found = Get-ChildItem -Path $root -Recurse -Filter "Azure.CodeSigning.Dlib.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($found) { $DlibPath = $found.FullName; break }
+            }
+        }
+    }
+
+    if (-not $SignToolExe -or -not (Test-Path $SignToolExe) -or -not $DlibPath -or -not (Test-Path $DlibPath)) { return $true }
+
+    $SignFailed = $false
+    Write-Host ""
+    Write-Host "Signing with Azure Artifact Signing..." -ForegroundColor Cyan
+    foreach ($ExeToSign in $PathsToSign) {
+        if (Test-Path $ExeToSign) {
+            $name = Split-Path $ExeToSign -Leaf
+            Write-Host "  Signing $name ..." -ForegroundColor Cyan
+            $SignToolArgs = @("sign", "/v", "/fd", "SHA256", "/tr", "http://timestamp.acs.microsoft.com", "/td", "SHA256", "/dlib", $DlibPath, "/dmdf", $MetadataPath, $ExeToSign)
+            & $SignToolExe $SignToolArgs
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "  Signing failed for $name (exit code $LASTEXITCODE)."
+                $SignFailed = $true
+            } else {
+                Write-Host "  Signed $name" -ForegroundColor Green
+            }
+        }
+    }
+    return (-not $SignFailed)
+}
+
 # Update version in installer scripts
 Write-Host "[1/5] Updating version in installer scripts..." -ForegroundColor Yellow
 $issFiles = @(
@@ -241,6 +305,21 @@ Bundle-PeRuntimeDeps -PublishDir $x64PublishDir_pe -Arch "x64"
 Bundle-PeRuntimeDeps -PublishDir $arm64PublishDir_pe -Arch "ARM64"
 Write-Host "  Done." -ForegroundColor Green
 
+# Sign app exes before packaging so ZIPs and installers contain signed executables
+$AppSigningSucceeded = Sign-WithArtifactSigning -PathsToSign @(
+    (Join-Path $x64PublishDir_pe "Chronos.App.exe"),
+    (Join-Path $arm64PublishDir_pe "Chronos.App.exe")
+)
+if (-not $AppSigningSucceeded) {
+    Write-Host ""
+    $response = Read-Host "One or more signing steps failed. Continue building ZIPs and installers (unsigned)? [Y/n]"
+    if ($response -match '^n|^N') {
+        Write-Host "Build stopped by user." -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "Continuing with unsigned build..." -ForegroundColor Yellow
+}
+
 # Create ZIP files
 Write-Host "[4/5] Creating portable ZIP files..." -ForegroundColor Yellow
 
@@ -341,6 +420,12 @@ if (-not $SkipInstaller) {
 } else {
     Write-Host "[5/5] Skipping installer generation (--SkipInstaller)" -ForegroundColor DarkGray
 }
+
+# Optional: Sign installer exes (app exes were signed before packaging)
+Sign-WithArtifactSigning -PathsToSign @(
+    (Join-Path $DistDir "Chronos-$Version-x64-Setup.exe"),
+    (Join-Path $DistDir "Chronos-$Version-arm64-Setup.exe")
+)
 
 Write-Host ""
 Write-Host "======================================" -ForegroundColor Cyan
