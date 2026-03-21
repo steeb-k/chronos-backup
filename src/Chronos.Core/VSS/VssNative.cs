@@ -33,7 +33,7 @@ internal static class VssNative
     public const int VSS_OBJECT_SNAPSHOT_SET = 2;
     public const uint INFINITE = 0xFFFFFFFF;
 
-    [DllImport(VssApiDll, ExactSpelling = true, PreserveSig = false)]
+    [DllImport(VssApiDll, EntryPoint = "CreateVssBackupComponentsInternal", ExactSpelling = true, PreserveSig = false)]
     public static extern void CreateVssBackupComponents(
         [MarshalAs(UnmanagedType.Interface)] out IVssBackupComponents ppBackup);
 
@@ -49,7 +49,7 @@ internal static class VssNative
 }
 
 [ComImport]
-[Guid("665c1d5e-c218-414d-a302-8b5adce4bfb4")]
+[Guid("665c1d5f-c218-414d-a05d-7fef5f9d5c86")]
 [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IVssBackupComponents
 {
