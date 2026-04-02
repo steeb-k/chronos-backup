@@ -4,6 +4,7 @@ using Chronos.App.Services;
 using Chronos.Core.Models;
 using Chronos.Core.Services;
 using Chronos.Common.Extensions;
+using Chronos.Common.Helpers;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -43,7 +44,7 @@ public partial class BackupViewModel : ObservableObject
     [ObservableProperty] public partial TargetDriveInfo? SelectedTargetDrive { get; set; }
     [ObservableProperty] public partial string BackupName { get; set; } = string.Empty;
     [ObservableProperty] public partial int CompressionLevel { get; set; } = 3;
-    [ObservableProperty] public partial bool UseVSS { get; set; } = true;
+    [ObservableProperty] public partial bool UseVSS { get; set; } = !PeEnvironment.IsWinPE;
     [ObservableProperty] public partial bool VerifyAfterBackup { get; set; } = true;
     [ObservableProperty] public partial bool HasPartitions { get; set; }
 

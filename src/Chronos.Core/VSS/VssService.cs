@@ -86,11 +86,26 @@ public sealed class VssService : IVssService
         if (normalized.Count == 0)
             throw new ArgumentException("No valid volume paths.", nameof(volumePaths));
 
-        return await Task.Run(() =>
+        // VSS COM interfaces require an STA thread. Thread pool threads (used by Task.Run)
+        // are MTA, which causes InitializeForBackup to fail with E_INVALIDARG (0x80070057)
+        // — especially in WinPE where COM apartment enforcement is strict. Spin up a
+        // dedicated STA thread for the entire VSS operation.
+        var tcs = new TaskCompletionSource<IVssSnapshotSet>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var thread = new Thread(() =>
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                tcs.SetCanceled(cancellationToken);
+                return;
+            }
+
             VssNative.CreateVssBackupComponents(out IVssBackupComponents vss);
             if (vss == null)
-                throw new InvalidOperationException("Failed to create VSS backup components.");
+            {
+                tcs.SetException(new InvalidOperationException("Failed to create VSS backup components."));
+                return;
+            }
 
             try
             {
@@ -150,7 +165,12 @@ public sealed class VssService : IVssService
                 snapshotAsync.Wait(VssNative.INFINITE);
                 Marshal.ReleaseComObject(snapshotAsync);
 
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    Marshal.ReleaseComObject(vss);
+                    tcs.SetCanceled(cancellationToken);
+                    return;
+                }
 
                 var originalToSnapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 for (int i = 0; i < snapshotIds.Count; i++)
@@ -183,14 +203,21 @@ public sealed class VssService : IVssService
                 }
 
                 Log.Information("VSS snapshot set created: {Count} volume(s)", originalToSnapshot.Count);
-                return new VssSnapshotSetImpl(vss, snapshotSetId, originalToSnapshot);
+                tcs.SetResult(new VssSnapshotSetImpl(vss, snapshotSetId, originalToSnapshot));
             }
-            catch
+            catch (Exception ex)
             {
                 Marshal.ReleaseComObject(vss);
-                throw;
+                tcs.SetException(ex);
             }
-        }, cancellationToken);
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Name = "VssSnapshotSTA";
+        thread.Start();
+
+        return await tcs.Task.ConfigureAwait(false);
     }
 
     /// <summary>
@@ -254,8 +281,15 @@ public sealed class VssService : IVssService
         public void Dispose()
         {
             if (_disposed) return;
+            _disposed = true;
             var vss = Interlocked.Exchange(ref _vss, null);
-            if (vss != null)
+            if (vss == null) return;
+
+            // The COM object was created on a dedicated STA thread that has since exited.
+            // Calling DeleteSnapshots from an MTA thread-pool thread causes a cross-apartment
+            // marshal that crashes in WinPE (limited COM runtime). Spin up a new STA thread
+            // for cleanup — same pattern as CreateSnapshotSetAsync.
+            var thread = new Thread(() =>
             {
                 try
                 {
@@ -270,8 +304,12 @@ public sealed class VssService : IVssService
                 {
                     Marshal.ReleaseComObject(vss);
                 }
-            }
-            _disposed = true;
+            });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.IsBackground = true;
+            thread.Name = "VssDisposeSTA";
+            thread.Start();
+            thread.Join(TimeSpan.FromSeconds(10));
         }
     }
 }

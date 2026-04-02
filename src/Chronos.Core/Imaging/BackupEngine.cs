@@ -29,6 +29,7 @@ public class BackupEngine : IBackupEngine
     private readonly IDiskEnumerator _diskEnumerator;
     private readonly IAllocatedRangesProvider _allocatedRangesProvider;
     private readonly IVssService _vssService;
+    private readonly IDiskPreparationService _diskPrep;
     private CancellationTokenSource? _cancellationTokenSource;
     private long _lastAllocatedBytesCopied;
 
@@ -39,7 +40,8 @@ public class BackupEngine : IBackupEngine
         ICompressionProvider compressionProvider,
         IDiskEnumerator diskEnumerator,
         IAllocatedRangesProvider allocatedRangesProvider,
-        IVssService vssService)
+        IVssService vssService,
+        IDiskPreparationService diskPreparationService)
     {
         _diskReader = diskReader ?? throw new ArgumentNullException(nameof(diskReader));
         _diskWriter = diskWriter ?? throw new ArgumentNullException(nameof(diskWriter));
@@ -48,6 +50,7 @@ public class BackupEngine : IBackupEngine
         _diskEnumerator = diskEnumerator ?? throw new ArgumentNullException(nameof(diskEnumerator));
         _allocatedRangesProvider = allocatedRangesProvider ?? throw new ArgumentNullException(nameof(allocatedRangesProvider));
         _vssService = vssService ?? throw new ArgumentNullException(nameof(vssService));
+        _diskPrep = diskPreparationService ?? throw new ArgumentNullException(nameof(diskPreparationService));
     }
 
     public async Task ExecuteAsync(BackupJob job, IProgressReporter? progressReporter = null, CancellationToken cancellationToken = default)
@@ -120,7 +123,18 @@ public class BackupEngine : IBackupEngine
             }
             else
             {
-                await CopyToFileAsync(sourceHandle, sourceSize, job, progressReporter, ct).ConfigureAwait(false);
+                // Non-VHDX file copy has no VSS path, so always lock volumes
+                IDisposable? volumeLocks = null;
+                try
+                {
+                    progressReporter?.Report(new OperationProgress { StatusMessage = "Locking source volumes..." });
+                    volumeLocks = await _diskPrep.LockVolumesForBackupAsync(diskNumber, job.DestinationPath, ct).ConfigureAwait(false);
+                    await CopyToFileAsync(sourceHandle, sourceSize, job, progressReporter, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    volumeLocks?.Dispose();
+                }
             }
 
             // Save sidecar metadata alongside the image
@@ -305,67 +319,106 @@ public class BackupEngine : IBackupEngine
 
         Log.Information("Creating and attaching VHDX: Path={Path}, Size={Size}, SectorSize={SectorSize}", job.DestinationPath, vhdxSize, sourceHandle.SectorSize);
         progressReporter?.Report(new OperationProgress { StatusMessage = "Creating and attaching VHDX..." });
-        using (var attached = await _virtualDiskService.CreateAndAttachVhdxForWriteAsync(job.DestinationPath, (long)vhdxSize, sourceHandle.SectorSize, ct).ConfigureAwait(false))
+        bool copySucceeded = false;
+        try
         {
-            Log.Information("VHDX attached. PhysicalPath={PhysicalPath}", attached.PhysicalPath);
-            DiskWriteHandle? destHandle = null;
-            IVssSnapshotSet? snapshotSet = null;
+            using (var attached = await _virtualDiskService.CreateAndAttachVhdxForWriteAsync(job.DestinationPath, (long)vhdxSize, sourceHandle.SectorSize, ct).ConfigureAwait(false))
+            {
+                Log.Information("VHDX attached. PhysicalPath={PhysicalPath}", attached.PhysicalPath);
+                DiskWriteHandle? destHandle = null;
+                IVssSnapshotSet? snapshotSet = null;
+                IDisposable? volumeLocks = null;
+                try
+                {
+                    Log.Debug("Opening destination for write: {Path}", attached.PhysicalPath);
+                    destHandle = await _diskWriter.OpenDiskForWriteAsync(attached.PhysicalPath, ct).ConfigureAwait(false);
+                    Log.Information("Starting sector copy: {Size} bytes", sourceSize);
+
+                    var allParts = await _diskEnumerator.GetPartitionsAsync(diskNumber).ConfigureAwait(false);
+                    List<PartitionInfo>? partitions;
+                    if (partitionNumber.HasValue)
+                    {
+                        var part = allParts.FirstOrDefault(p => p.PartitionNumber == partitionNumber.Value);
+                        partitions = part != null ? new List<PartitionInfo> { new() { Offset = 0, Size = part.Size, VolumePath = part.VolumePath } } : null;
+                    }
+                    else
+                    {
+                        partitions = allParts.OrderBy(p => p.Offset).ToList();
+                    }
+                    if (!job.UseVSS)
+                        Log.Information("VSS skipped (disabled by user)");
+                    else if (!_vssService.IsVssAvailable())
+                        Log.Information("VSS skipped (not available)");
+
+                    if (job.UseVSS && _vssService.IsVssAvailable() && partitions != null && partitions.Count > 0)
+                    {
+                        var volumesToSnapshot = partitions
+                            .Where(p => !string.IsNullOrEmpty(p.VolumePath) && !IsVolumeSameAsDestination(p.VolumePath, job.DestinationPath))
+                            .Select(p => p.VolumePath!.Replace(@"\\.\", "") + @"\")
+                            .Distinct()
+                            .ToList();
+                        if (volumesToSnapshot.Count > 0)
+                        {
+                            var vssProgress = progressReporter != null
+                                ? new Progress<string>(msg => progressReporter.Report(new OperationProgress { StatusMessage = msg }))
+                                : null;
+                            snapshotSet = await _vssService.CreateSnapshotSetAsync(volumesToSnapshot, ct, vssProgress).ConfigureAwait(false);
+                        }
+                    }
+
+                    // When VSS is not in use, lock and dismount source volumes to prevent
+                    // writes during the backup. The destination volume is excluded.
+                    if (snapshotSet == null)
+                    {
+                        progressReporter?.Report(new OperationProgress { StatusMessage = "Locking source volumes..." });
+                        volumeLocks = await _diskPrep.LockVolumesForBackupAsync(diskNumber, job.DestinationPath, ct).ConfigureAwait(false);
+                    }
+
+                    var ranges = await BuildCopyRangesAsync(diskNumber, partitionNumber, sourceSize, job.DestinationPath, snapshotSet, sourceHandle.SectorSize, ct).ConfigureAwait(false);
+                    if (ranges is not null)
+                    {
+                        Log.Debug("CopyToVhdx: using allocated-ranges optimization ({RangeCount} ranges)", ranges.Count);
+                        await CopySectorsWithRangesAsync(sourceHandle, destHandle, ranges, sourceSize, partitions, snapshotSet, progressReporter, ct).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        Log.Debug("CopyToVhdx: using full linear copy (no allocated ranges)");
+                        await CopySectorsAsync(sourceHandle, destHandle, sourceSize, job.CompressionLevel, partitions, snapshotSet, progressReporter, ct).ConfigureAwait(false);
+                    }
+
+                    Log.Debug("CopyToVhdx: sector copy complete, reporting Finalizing backup");
+                    progressReporter?.Report(new OperationProgress { StatusMessage = "Finalizing backup...", PercentComplete = 100 });
+                    copySucceeded = true;
+                }
+                finally
+                {
+                    Log.Debug("CopyToVhdx: finally block - disposing snapshot set");
+                    snapshotSet?.Dispose();
+                    Log.Debug("CopyToVhdx: disposed snapshot set, releasing volume locks");
+                    volumeLocks?.Dispose();
+                    Log.Debug("CopyToVhdx: released volume locks, disposing dest handle");
+                    destHandle?.Dispose();
+                    Log.Debug("CopyToVhdx: disposed dest handle");
+                }
+            }
+        }
+        catch when (!copySucceeded)
+        {
+            // Delete the partial VHDX so the user is not left with a silently incomplete file.
+            // The VHDX handle is already closed (the using block above exited before we reach here).
             try
             {
-                Log.Debug("Opening destination for write: {Path}", attached.PhysicalPath);
-                destHandle = await _diskWriter.OpenDiskForWriteAsync(attached.PhysicalPath, ct).ConfigureAwait(false);
-                Log.Information("Starting sector copy: {Size} bytes", sourceSize);
-
-                var allParts = await _diskEnumerator.GetPartitionsAsync(diskNumber).ConfigureAwait(false);
-                List<PartitionInfo>? partitions;
-                if (partitionNumber.HasValue)
+                if (File.Exists(job.DestinationPath))
                 {
-                    var part = allParts.FirstOrDefault(p => p.PartitionNumber == partitionNumber.Value);
-                    partitions = part != null ? new List<PartitionInfo> { new() { Offset = 0, Size = part.Size, VolumePath = part.VolumePath } } : null;
+                    File.Delete(job.DestinationPath);
+                    Log.Warning("CopyToVhdx: deleted partial VHDX after failure: {Path}", job.DestinationPath);
                 }
-                else
-                {
-                    partitions = allParts.OrderBy(p => p.Offset).ToList();
-                }
-                if (_vssService.IsVssAvailable() && partitions != null && partitions.Count > 0)
-                {
-                    var volumesToSnapshot = partitions
-                        .Where(p => !string.IsNullOrEmpty(p.VolumePath) && !IsVolumeSameAsDestination(p.VolumePath, job.DestinationPath))
-                        .Select(p => p.VolumePath!.Replace(@"\\.\", "") + @"\")
-                        .Distinct()
-                        .ToList();
-                    if (volumesToSnapshot.Count > 0)
-                    {
-                        var vssProgress = progressReporter != null
-                            ? new Progress<string>(msg => progressReporter.Report(new OperationProgress { StatusMessage = msg }))
-                            : null;
-                        snapshotSet = await _vssService.CreateSnapshotSetAsync(volumesToSnapshot, ct, vssProgress).ConfigureAwait(false);
-                    }
-                }
-
-                var ranges = await BuildCopyRangesAsync(diskNumber, partitionNumber, sourceSize, job.DestinationPath, snapshotSet, sourceHandle.SectorSize, ct).ConfigureAwait(false);
-                if (ranges is not null)
-                {
-                    Log.Debug("CopyToVhdx: using allocated-ranges optimization ({RangeCount} ranges)", ranges.Count);
-                    await CopySectorsWithRangesAsync(sourceHandle, destHandle, ranges, sourceSize, partitions, snapshotSet, progressReporter, ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    Log.Debug("CopyToVhdx: using full linear copy (no allocated ranges)");
-                    await CopySectorsAsync(sourceHandle, destHandle, sourceSize, job.CompressionLevel, partitions, snapshotSet, progressReporter, ct).ConfigureAwait(false);
-                }
-
-                Log.Debug("CopyToVhdx: sector copy complete, reporting Finalizing backup");
-                progressReporter?.Report(new OperationProgress { StatusMessage = "Finalizing backup...", PercentComplete = 100 });
             }
-            finally
+            catch (Exception cleanupEx)
             {
-                Log.Debug("CopyToVhdx: finally block - disposing snapshot set");
-                snapshotSet?.Dispose();
-                Log.Debug("CopyToVhdx: disposed snapshot set, disposing dest handle");
-                destHandle?.Dispose();
-                Log.Debug("CopyToVhdx: disposed dest handle");
+                Log.Error(cleanupEx, "CopyToVhdx: failed to delete partial VHDX {Path}", job.DestinationPath);
             }
+            throw;
         }
     }
 
@@ -384,21 +437,42 @@ public class BackupEngine : IBackupEngine
             File.Delete(job.DestinationPath);
 
         bool useCompression = job.CompressionLevel > 0;
-
-        if (useCompression)
+        bool copySucceeded = false;
+        try
         {
-            progressReporter?.Report(new OperationProgress { StatusMessage = "Compressing to file..." });
-            await using var diskStream = new DiskReadStream(_diskReader, sourceHandle, CopyBufferSize);
-            await using var progressStream = new ProgressReportingStream(diskStream, sourceSize, progressReporter);
-            await using var fileStream = new FileStream(job.DestinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous);
-            await _compressionProvider.CompressAsync(progressStream, fileStream, job.CompressionLevel, ct).ConfigureAwait(false);
+            if (useCompression)
+            {
+                progressReporter?.Report(new OperationProgress { StatusMessage = "Compressing to file..." });
+                await using var diskStream = new DiskReadStream(_diskReader, sourceHandle, CopyBufferSize);
+                await using var progressStream = new ProgressReportingStream(diskStream, sourceSize, progressReporter);
+                await using var fileStream = new FileStream(job.DestinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous);
+                await _compressionProvider.CompressAsync(progressStream, fileStream, job.CompressionLevel, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                progressReporter?.Report(new OperationProgress { StatusMessage = "Copying to file..." });
+                await using var diskStream = new DiskReadStream(_diskReader, sourceHandle, CopyBufferSize);
+                await using var fileStream = new FileStream(job.DestinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, CopyBufferSize, FileOptions.Asynchronous);
+                await CopyStreamWithProgressAsync(diskStream, fileStream, sourceSize, progressReporter, ct).ConfigureAwait(false);
+            }
+            copySucceeded = true;
         }
-        else
+        catch when (!copySucceeded)
         {
-            progressReporter?.Report(new OperationProgress { StatusMessage = "Copying to file..." });
-            await using var diskStream = new DiskReadStream(_diskReader, sourceHandle, CopyBufferSize);
-            await using var fileStream = new FileStream(job.DestinationPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, CopyBufferSize, FileOptions.Asynchronous);
-            await CopyStreamWithProgressAsync(diskStream, fileStream, sourceSize, progressReporter, ct).ConfigureAwait(false);
+            // Delete the partial file so the user is not left with a silently incomplete image.
+            try
+            {
+                if (File.Exists(job.DestinationPath))
+                {
+                    File.Delete(job.DestinationPath);
+                    Log.Warning("CopyToFile: deleted partial file after failure: {Path}", job.DestinationPath);
+                }
+            }
+            catch (Exception cleanupEx)
+            {
+                Log.Error(cleanupEx, "CopyToFile: failed to delete partial file {Path}", job.DestinationPath);
+            }
+            throw;
         }
     }
 

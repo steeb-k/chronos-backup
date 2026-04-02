@@ -105,7 +105,7 @@
                             BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1" CornerRadius="8" Padding="20">
 
-                    <ToggleSwitch Header="Use Volume Shadow Copy (VSS)" IsOn="True"
+                    <ToggleSwitch Header="Use Volume Shadow Copy (VSS)" IsOn="{Binding UseVSS, Mode=TwoWay}"
                                   OnContent="Enabled — consistent snapshot" OffContent="Disabled" />
 
                     <ToggleSwitch Header="Verify after backup" IsOn="True"

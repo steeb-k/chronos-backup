@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
+using Chronos.Core.Models;
 using Chronos.Native.Win32;
 using Serilog;
 
@@ -48,6 +49,13 @@ public interface IDiskPreparationService
     /// (e.g., the one hosting the source VHDX file).
     /// </summary>
     Task<IDisposable> PreparePartitionForRestoreAsync(uint diskNumber, uint partitionNumber, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Locks and dismounts volumes on a disk for backup. Unlike restore preparation,
+    /// the disk is NOT taken offline (the raw disk handle must remain readable).
+    /// Volumes hosting the destination file are excluded from locking.
+    /// </summary>
+    Task<IDisposable> LockVolumesForBackupAsync(uint diskNumber, string? destinationPath, CancellationToken cancellationToken = default);
 }
 
 public class DiskPreparationService : IDiskPreparationService
@@ -332,6 +340,140 @@ public class DiskPreparationService : IDiskPreparationService
             lockedVolumes.Dispose();
             throw;
         }
+    }
+
+    public async Task<IDisposable> LockVolumesForBackupAsync(uint diskNumber, string? destinationPath, CancellationToken cancellationToken = default)
+    {
+        var lockedVolumes = new LockedVolumeSet();
+
+        try
+        {
+            await _diskEnumerator.RefreshAsync();
+            var partitions = await _diskEnumerator.GetPartitionsAsync(diskNumber);
+
+            Log.Information("Locking volumes on disk {DiskNumber} for backup: found {Count} partitions", diskNumber, partitions.Count);
+
+            foreach (var partition in partitions)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (string.IsNullOrEmpty(partition.VolumePath))
+                {
+                    Log.Debug("Partition {Disk}:{Part} has no volume path, skipping lock",
+                        diskNumber, partition.PartitionNumber);
+                    continue;
+                }
+
+                // Skip the volume that hosts the destination file
+                if (!string.IsNullOrEmpty(destinationPath) && IsVolumeHostingPath(partition, destinationPath))
+                {
+                    Log.Information("Skipping lock on {VolumePath} — hosts destination file", partition.VolumePath);
+                    continue;
+                }
+
+                Log.Information("Locking volume {VolumePath} (Disk {Disk}, Partition {Part})",
+                    partition.VolumePath, diskNumber, partition.PartitionNumber);
+
+                try
+                {
+                    var volumeHandle = DiskApi.CreateFile(
+                        partition.VolumePath,
+                        GENERIC_READ | GENERIC_WRITE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        IntPtr.Zero, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+
+                    if (volumeHandle.IsInvalid)
+                    {
+                        int err = Marshal.GetLastWin32Error();
+                        Log.Warning("Could not open volume {Volume} for lock, error {Error}. Trying read-only...",
+                            partition.VolumePath, err);
+
+                        volumeHandle = DiskApi.CreateFile(
+                            partition.VolumePath,
+                            GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            IntPtr.Zero, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, IntPtr.Zero);
+
+                        if (volumeHandle.IsInvalid)
+                        {
+                            err = Marshal.GetLastWin32Error();
+                            Log.Warning("Could not open volume {Volume} at all, error {Error}. Backup will proceed without lock.",
+                                partition.VolumePath, err);
+                            continue;
+                        }
+                    }
+
+                    bool locked = false;
+                    for (int attempt = 0; attempt < 5; attempt++)
+                    {
+                        if (DiskApi.DeviceIoControl(volumeHandle, DiskApi.FSCTL_LOCK_VOLUME,
+                            IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero))
+                        {
+                            locked = true;
+                            Log.Debug("Locked volume {Volume} on attempt {Attempt}", partition.VolumePath, attempt + 1);
+                            break;
+                        }
+
+                        int lockErr = Marshal.GetLastWin32Error();
+                        Log.Warning("Lock attempt {Attempt}/5 failed for {Volume}, error {Error}. Retrying...",
+                            attempt + 1, partition.VolumePath, lockErr);
+                        Thread.Sleep(500);
+                    }
+
+                    if (!locked)
+                    {
+                        Log.Warning("Could not lock volume {Volume} after 5 attempts. Backup will proceed without lock.",
+                            partition.VolumePath);
+                        volumeHandle.Dispose();
+                        continue;
+                    }
+
+                    // Dismount to flush filesystem buffers and invalidate cached data
+                    if (!DiskApi.DeviceIoControl(volumeHandle, DiskApi.FSCTL_DISMOUNT_VOLUME,
+                        IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero))
+                    {
+                        int dismountErr = Marshal.GetLastWin32Error();
+                        Log.Warning("Failed to dismount volume {Volume}, error {Error}. Lock is still held.",
+                            partition.VolumePath, dismountErr);
+                    }
+                    else
+                    {
+                        Log.Information("Dismounted volume {VolumePath}", partition.VolumePath);
+                    }
+
+                    lockedVolumes.Add(volumeHandle, partition.VolumePath);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Error locking volume {VolumePath}", partition.VolumePath);
+                }
+            }
+
+            Log.Information("Disk {DiskNumber} backup lock complete: {Count} volumes locked", diskNumber, lockedVolumes.Count);
+            return lockedVolumes;
+        }
+        catch
+        {
+            lockedVolumes.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Returns true if the partition's drive letter matches the destination path's root.
+    /// </summary>
+    private static bool IsVolumeHostingPath(PartitionInfo partition, string path)
+    {
+        if (string.IsNullOrEmpty(partition.VolumePath) || string.IsNullOrEmpty(path))
+            return false;
+        // VolumePath = "\\.\E:", extract "E:"
+        var volumePath = partition.VolumePath;
+        if (volumePath.Length < 4) return false;
+        var volumeDrive = volumePath.Substring(4); // strip "\\.\""
+        var pathRoot = Path.GetPathRoot(path);
+        if (string.IsNullOrEmpty(pathRoot)) return false;
+        var pathDrive = pathRoot.TrimEnd('\\', '/');
+        return string.Equals(volumeDrive, pathDrive, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
