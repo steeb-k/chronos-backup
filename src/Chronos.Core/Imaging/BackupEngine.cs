@@ -738,6 +738,9 @@ public class BackupEngine : IBackupEngine
         if (!cache.TryGetValue(part.Offset, out var handle))
         {
             handle = _diskReader.OpenPathForReadAsync(snapshotPath, part.Size, CancellationToken.None).GetAwaiter().GetResult();
+            // Inherit sector size from the source disk — OpenPathForReadAsync defaults to 512
+            // which causes ERROR_INVALID_PARAMETER (87) on 4K-native disks (common on ARM64).
+            handle.SectorSize = diskHandle.SectorSize;
             cache[part.Offset] = handle;
         }
         return (handle, (long)part.Offset);

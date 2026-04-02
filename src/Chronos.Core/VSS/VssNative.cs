@@ -33,6 +33,9 @@ internal static class VssNative
     public const int VSS_OBJECT_SNAPSHOT_SET = 2;
     public const uint INFINITE = 0xFFFFFFFF;
 
+    /// <summary>VSS_E_WRITER_INFRASTRUCTURE (0x80042316): writer infrastructure is not operating properly.</summary>
+    public const int VSS_E_WRITER_INFRASTRUCTURE = unchecked((int)0x80042316);
+
     [DllImport(VssApiDll, EntryPoint = "CreateVssBackupComponentsInternal", ExactSpelling = true, PreserveSig = false)]
     public static extern void CreateVssBackupComponents(
         [MarshalAs(UnmanagedType.Interface)] out IVssBackupComponents ppBackup);

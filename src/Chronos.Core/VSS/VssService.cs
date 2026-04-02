@@ -13,6 +13,10 @@ namespace Chronos.Core.VSS;
 /// </summary>
 public sealed class VssService : IVssService
 {
+    private const uint WaitObject0 = 0;
+    private const uint QsAllinput = 0x04FF;
+    private const uint PmRemove = 0x0001;
+
     /// <summary>
     /// Last error details from IsVssAvailable() — useful for diagnostics.
     /// </summary>
@@ -89,7 +93,8 @@ public sealed class VssService : IVssService
         // VSS COM interfaces require an STA thread. Thread pool threads (used by Task.Run)
         // are MTA, which causes InitializeForBackup to fail with E_INVALIDARG (0x80070057)
         // — especially in WinPE where COM apartment enforcement is strict. Spin up a
-        // dedicated STA thread for the entire VSS operation.
+        // dedicated STA thread for the entire VSS operation. The thread stays alive with a
+        // message pump until Dispose deletes the snapshot set on the same apartment.
         var tcs = new TaskCompletionSource<IVssSnapshotSet>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var thread = new Thread(() =>
@@ -100,15 +105,18 @@ public sealed class VssService : IVssService
                 return;
             }
 
-            VssNative.CreateVssBackupComponents(out IVssBackupComponents vss);
-            if (vss == null)
-            {
-                tcs.SetException(new InvalidOperationException("Failed to create VSS backup components."));
-                return;
-            }
-
+            IVssBackupComponents? vss = null;
+            ManualResetEvent? disposeSignal = null;
+            ManualResetEvent? staCleanupDone = null;
             try
             {
+                VssNative.CreateVssBackupComponents(out vss);
+                if (vss == null)
+                {
+                    tcs.SetException(new InvalidOperationException("Failed to create VSS backup components."));
+                    return;
+                }
+
                 int hr = vss.InitializeForBackup(null);
                 if (hr < 0)
                     throw new InvalidOperationException($"VSS InitializeForBackup failed: 0x{hr:X8}");
@@ -121,8 +129,11 @@ public sealed class VssService : IVssService
                 hr = vss.GatherWriterMetadata(out IVssAsync gatherAsync);
                 if (hr < 0)
                     throw new InvalidOperationException($"VSS GatherWriterMetadata failed: 0x{hr:X8}");
-                gatherAsync.Wait(VssNative.INFINITE);
-                Marshal.ReleaseComObject(gatherAsync);
+                CompleteVssAsync(gatherAsync, "GatherWriterMetadata");
+
+                hr = vss.FreeWriterMetadata();
+                if (hr < 0)
+                    Log.Warning("VSS FreeWriterMetadata returned 0x{Hr:X8}", (uint)hr);
 
                 progress?.Report("Adding volumes to snapshot set...");
                 hr = vss.StartSnapshotSet(out Guid snapshotSetId);
@@ -155,19 +166,40 @@ public sealed class VssService : IVssService
                 hr = vss.PrepareForBackup(out IVssAsync prepareAsync);
                 if (hr < 0)
                     throw new InvalidOperationException($"VSS PrepareForBackup failed: 0x{hr:X8}");
-                prepareAsync.Wait(VssNative.INFINITE);
-                Marshal.ReleaseComObject(prepareAsync);
+                try
+                {
+                    CompleteVssAsync(prepareAsync, "PrepareForBackup");
+                }
+                catch (COMException ex) when (ex.HResult == VssNative.VSS_E_WRITER_INFRASTRUCTURE)
+                {
+                    // VSS_E_WRITER_INFRASTRUCTURE: writer services are unavailable (common on
+                    // ARM64). The snapshot can still proceed — it will be crash-consistent
+                    // rather than application-consistent, which is acceptable for disk imaging.
+                    Log.Warning("VSS PrepareForBackup: writer infrastructure error (0x80042316). " +
+                                "Proceeding without writer quiescence — snapshot will be crash-consistent.");
+                }
 
                 progress?.Report("Creating snapshot...");
                 hr = vss.DoSnapshotSet(out IVssAsync snapshotAsync);
                 if (hr < 0)
                     throw new InvalidOperationException($"VSS DoSnapshotSet failed: 0x{hr:X8}");
-                snapshotAsync.Wait(VssNative.INFINITE);
-                Marshal.ReleaseComObject(snapshotAsync);
+                try
+                {
+                    CompleteVssAsync(snapshotAsync, "DoSnapshotSet");
+                }
+                catch (COMException ex) when (ex.HResult == VssNative.VSS_E_WRITER_INFRASTRUCTURE)
+                {
+                    // Writers failed during freeze/thaw but the VSS provider snapshot is
+                    // typically still valid (crash-consistent). Continue to retrieve the
+                    // snapshot device path.
+                    Log.Warning("VSS DoSnapshotSet: writer infrastructure error (0x80042316). " +
+                                "Snapshot created as crash-consistent (writer quiescence not achieved).");
+                }
 
                 if (cancellationToken.IsCancellationRequested)
                 {
                     Marshal.ReleaseComObject(vss);
+                    vss = null;
                     tcs.SetCanceled(cancellationToken);
                     return;
                 }
@@ -203,12 +235,56 @@ public sealed class VssService : IVssService
                 }
 
                 Log.Information("VSS snapshot set created: {Count} volume(s)", originalToSnapshot.Count);
-                tcs.SetResult(new VssSnapshotSetImpl(vss, snapshotSetId, originalToSnapshot));
+
+                disposeSignal = new ManualResetEvent(false);
+                staCleanupDone = new ManualResetEvent(false);
+                Guid setId = snapshotSetId;
+                tcs.SetResult(new VssSnapshotSetImpl(originalToSnapshot, disposeSignal, staCleanupDone));
+
+                PumpStaUntilSignaled(disposeSignal);
+
+                hr = vss.DeleteSnapshots(setId, VssNative.VSS_OBJECT_SNAPSHOT_SET, false, out _, out _);
+                if (hr < 0)
+                    Log.Warning("VSS DeleteSnapshots returned 0x{Hr:X8}", (uint)hr);
+                else
+                    Log.Debug("VSS snapshot set deleted");
             }
             catch (Exception ex)
             {
-                Marshal.ReleaseComObject(vss);
-                tcs.SetException(ex);
+                if (vss != null)
+                {
+                    try
+                    {
+                        Marshal.ReleaseComObject(vss);
+                    }
+                    catch (Exception releaseEx)
+                    {
+                        Log.Debug(releaseEx, "VSS: Release backup components after error");
+                    }
+
+                    vss = null;
+                }
+
+                if (!tcs.Task.IsCompleted)
+                    tcs.SetException(ex);
+                else
+                    Log.Error(ex, "VSS STA thread failed after snapshot set was created");
+            }
+            finally
+            {
+                if (vss != null)
+                {
+                    try
+                    {
+                        Marshal.ReleaseComObject(vss);
+                    }
+                    catch (Exception releaseEx)
+                    {
+                        Log.Debug(releaseEx, "VSS: Release backup components in finally");
+                    }
+                }
+
+                staCleanupDone?.Set();
             }
         });
 
@@ -219,6 +295,108 @@ public sealed class VssService : IVssService
 
         return await tcs.Task.ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Finishes an IVssAsync operation: Wait, QueryStatus (required by VSS), release.
+    /// </summary>
+    private static void CompleteVssAsync(IVssAsync async, string operationName)
+    {
+        ArgumentNullException.ThrowIfNull(async);
+        try
+        {
+            int hrWait = async.Wait(VssNative.INFINITE);
+            if (hrWait < 0)
+                throw new COMException($"VSS {operationName}: IVssAsync.Wait failed: 0x{hrWait:X8}", hrWait);
+
+            int hrOp = 0;
+            int reserved = 0;
+            int hrQs = async.QueryStatus(out hrOp, out reserved);
+            if (hrQs < 0)
+                throw new COMException($"VSS {operationName}: IVssAsync.QueryStatus failed: 0x{hrQs:X8}", hrQs);
+            if (hrOp < 0)
+                throw new COMException(FormatVssOperationError(operationName, hrOp), hrOp);
+        }
+        finally
+        {
+            Marshal.ReleaseComObject(async);
+        }
+    }
+
+    private static string FormatVssOperationError(string operationName, int hrOp)
+    {
+        string hint = hrOp switch
+        {
+            unchecked((int)0x80070005) => " (E_ACCESSDENIED — check concurrent VSS backups, writer/DCOM permissions.)",
+            unchecked((int)0x8004230F) => " (VSS_E_UNEXPECTED_WRITER_ERROR)",
+            VssNative.VSS_E_WRITER_INFRASTRUCTURE => " (VSS_E_WRITER_INFRASTRUCTURE — writer services not operating properly, common on ARM64.)",
+            unchecked((int)0x80042318) => " (VSS_E_WRITER_STATUS_NOT_AVAILABLE)",
+            _ => string.Empty
+        };
+        return $"VSS {operationName} async operation failed: 0x{hrOp:X8}{hint}";
+    }
+
+    /// <summary>
+    /// Runs a minimal STA message pump until <paramref name="disposeSignal"/> is set, so COM callbacks can complete.
+    /// </summary>
+    private static void PumpStaUntilSignaled(ManualResetEvent disposeSignal)
+    {
+        IntPtr handle = disposeSignal.SafeWaitHandle.DangerousGetHandle();
+        var handles = new[] { handle };
+
+        while (!disposeSignal.WaitOne(0))
+        {
+            uint wake = MsgWaitForMultipleObjects(1, handles, false, unchecked((uint)-1), QsAllinput);
+            if (wake == WaitObject0)
+                break;
+
+            // WAIT_OBJECT_0 + nCount: input (e.g. messages) is available
+            if (wake == WaitObject0 + 1)
+            {
+                while (PeekMessage(out MSG msg, IntPtr.Zero, 0, 0, PmRemove))
+                {
+                    TranslateMessage(ref msg);
+                    DispatchMessage(ref msg);
+                }
+            }
+            else
+            {
+                Log.Debug("MsgWaitForMultipleObjects returned unexpected value {Wake}", wake);
+                Thread.Sleep(10);
+            }
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public IntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public POINT pt;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int x;
+        public int y;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint MsgWaitForMultipleObjects(uint nCount, IntPtr[] pHandles, [MarshalAs(UnmanagedType.Bool)] bool bWaitAll, uint dwMilliseconds, uint dwWakeMask);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool TranslateMessage(ref MSG lpMsg);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr DispatchMessage(ref MSG lpMsg);
 
     /// <summary>
     /// Normalize for VSS AddToSnapshotSet: needs "X:\" or "\\?\Volume{guid}\" format.
@@ -253,16 +431,19 @@ public sealed class VssService : IVssService
 
     private sealed class VssSnapshotSetImpl : IVssSnapshotSet
     {
-        private IVssBackupComponents? _vss;
-        private readonly Guid _snapshotSetId;
         private readonly IReadOnlyDictionary<string, string> _originalToSnapshot;
+        private readonly ManualResetEvent _disposeSignal;
+        private readonly ManualResetEvent _staCleanupDone;
         private bool _disposed;
 
-        public VssSnapshotSetImpl(IVssBackupComponents vss, Guid snapshotSetId, IReadOnlyDictionary<string, string> originalToSnapshot)
+        public VssSnapshotSetImpl(
+            IReadOnlyDictionary<string, string> originalToSnapshot,
+            ManualResetEvent disposeSignal,
+            ManualResetEvent staCleanupDone)
         {
-            _vss = vss;
-            _snapshotSetId = snapshotSetId;
             _originalToSnapshot = originalToSnapshot;
+            _disposeSignal = disposeSignal;
+            _staCleanupDone = staCleanupDone;
         }
 
         public string? GetSnapshotPath(string originalVolumePath)
@@ -282,34 +463,9 @@ public sealed class VssService : IVssService
         {
             if (_disposed) return;
             _disposed = true;
-            var vss = Interlocked.Exchange(ref _vss, null);
-            if (vss == null) return;
-
-            // The COM object was created on a dedicated STA thread that has since exited.
-            // Calling DeleteSnapshots from an MTA thread-pool thread causes a cross-apartment
-            // marshal that crashes in WinPE (limited COM runtime). Spin up a new STA thread
-            // for cleanup — same pattern as CreateSnapshotSetAsync.
-            var thread = new Thread(() =>
-            {
-                try
-                {
-                    vss.DeleteSnapshots(_snapshotSetId, VssNative.VSS_OBJECT_SNAPSHOT_SET, false, out _, out _);
-                    Log.Debug("VSS snapshot set deleted");
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning(ex, "Failed to delete VSS snapshot set");
-                }
-                finally
-                {
-                    Marshal.ReleaseComObject(vss);
-                }
-            });
-            thread.SetApartmentState(ApartmentState.STA);
-            thread.IsBackground = true;
-            thread.Name = "VssDisposeSTA";
-            thread.Start();
-            thread.Join(TimeSpan.FromSeconds(10));
+            _disposeSignal.Set();
+            if (!_staCleanupDone.WaitOne(TimeSpan.FromSeconds(10)))
+                Log.Warning("VSS STA cleanup did not complete within 10 seconds");
         }
     }
 }

@@ -142,6 +142,11 @@ public class DiskReader : IDiskReader
                 throw new IOException($"Failed to open path {path}. Error: {Marshal.GetLastWin32Error()}");
             var h = new DiskReadHandle(handle, path);
             h.SizeBytes = sizeBytes;
+            // Try to query actual sector size — IOCTL may fail on some device paths
+            // (e.g. VSS snapshots), in which case callers should set SectorSize explicitly.
+            uint queriedSectorSize = QuerySectorSize(handle);
+            if (queriedSectorSize > 0)
+                h.SectorSize = queriedSectorSize;
             return h;
         }, cancellationToken);
     }
