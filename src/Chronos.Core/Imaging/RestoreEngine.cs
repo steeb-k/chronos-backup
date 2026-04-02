@@ -25,7 +25,6 @@ public class RestoreEngine : IRestoreEngine
     private readonly IDiskEnumerator _diskEnumerator;
     private readonly IDiskPreparationService _diskPreparation;
     private readonly IAllocatedRangesProvider _allocatedRangesProvider;
-    private readonly IFilesystemChecker? _filesystemChecker;
 
     public RestoreEngine(
         IDiskReader diskReader,
@@ -33,8 +32,7 @@ public class RestoreEngine : IRestoreEngine
         IVirtualDiskService virtualDiskService,
         IDiskEnumerator diskEnumerator,
         IDiskPreparationService diskPreparation,
-        IAllocatedRangesProvider allocatedRangesProvider,
-        IFilesystemChecker? filesystemChecker = null)
+        IAllocatedRangesProvider allocatedRangesProvider)
     {
         _diskReader = diskReader ?? throw new ArgumentNullException(nameof(diskReader));
         _diskWriter = diskWriter ?? throw new ArgumentNullException(nameof(diskWriter));
@@ -42,7 +40,6 @@ public class RestoreEngine : IRestoreEngine
         _diskEnumerator = diskEnumerator ?? throw new ArgumentNullException(nameof(diskEnumerator));
         _diskPreparation = diskPreparation ?? throw new ArgumentNullException(nameof(diskPreparation));
         _allocatedRangesProvider = allocatedRangesProvider ?? throw new ArgumentNullException(nameof(allocatedRangesProvider));
-        _filesystemChecker = filesystemChecker;
     }
 
     public async Task ExecuteAsync(RestoreJob job, IProgressReporter? progressReporter = null, CancellationToken cancellationToken = default)
@@ -129,43 +126,13 @@ public class RestoreEngine : IRestoreEngine
                     await RestoreFromRawImageAsync(job, progressReporter, cancellationToken);
                 }
 
-                // Post-restore filesystem consistency check (optional, VHDX only)
-                FilesystemCheckResult? fsCheck = null;
-                if (job.RunFilesystemCheck && _filesystemChecker is not null && isVhdx)
-                {
-                    progressReporter?.Report(new OperationProgress
-                    {
-                        StatusMessage = "Verifying source image filesystem...",
-                        PercentComplete = 100
-                    });
-                    try
-                    {
-                        fsCheck = await _filesystemChecker.CheckAsync(
-                            job.SourceImagePath, progressReporter, cancellationToken).ConfigureAwait(false);
-                        Log.Information("Filesystem check: IsHealthy={Healthy}, Summary={Summary}, ExitCode={Code}, Fallback={Fallback}",
-                            fsCheck.IsHealthy, fsCheck.Summary, fsCheck.ChkdskExitCode, fsCheck.UsedFallback);
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Warning(ex, "Filesystem check failed — reporting restore as complete without check result");
-                    }
-                }
-
-                var finalMessage = fsCheck switch
-                {
-                    null                   => "Restore completed successfully",
-                    { IsHealthy: true }    => $"Restore completed — filesystem OK ({fsCheck.Summary})",
-                    { ChkdskExitCode: 2 }  => $"Restore completed — filesystem warnings: {fsCheck.Summary}",
-                    _                      => $"Restore completed — filesystem errors detected: {fsCheck.Summary}"
-                };
-
                 progressReporter?.Report(new OperationProgress
                 {
-                    StatusMessage = finalMessage,
+                    StatusMessage = "Restore completed successfully",
                     PercentComplete = 100
                 });
 
-                Log.Information("Restore complete. Status: {Status}", finalMessage);
+                Log.Information("Restore complete");
             }
             finally
             {

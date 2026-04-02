@@ -103,36 +103,39 @@ public partial class BackupOperationsService : ObservableObject, IBackupOperatio
             if (verifyAfterBackup && _verificationEngine is not null)
             {
                 // Quick size sanity check before reading the entire image for verification.
-                // If a sidecar exists with expected allocated bytes, compare against actual file size.
-                // An image that's drastically undersized (< 75% of expected) indicates a failed/incomplete
-                // backup — no point in reading the whole file.
+                // Skip for VHDX files — dynamic VHDXs are sparse and their physical file size
+                // does not reflect the logical data written (zero-filled regions are not stored).
                 bool skipFullVerify = false;
-                try
+                bool isVhdx = job.DestinationPath.EndsWith(".vhdx", StringComparison.OrdinalIgnoreCase);
+                if (!isVhdx)
                 {
-                    var sidecar = await ImageSidecar.LoadAsync(job.DestinationPath);
-                    if (sidecar?.ExpectedAllocatedBytes is > 0)
+                    try
                     {
-                        var actualSize = new FileInfo(job.DestinationPath).Length;
-                        double ratio = (double)actualSize / sidecar.ExpectedAllocatedBytes.Value;
-                        Log.Information("Pre-verification size check: actual={Actual}, expected>={Expected}, ratio={Ratio:P1}",
-                            actualSize, sidecar.ExpectedAllocatedBytes.Value, ratio);
-
-                        if (ratio < 0.75)
+                        var sidecar = await ImageSidecar.LoadAsync(job.DestinationPath);
+                        if (sidecar?.ExpectedAllocatedBytes is > 0)
                         {
-                            Log.Error("Image is drastically undersized: {Actual} bytes vs {Expected} expected allocated bytes ({Ratio:P1})",
+                            var actualSize = new FileInfo(job.DestinationPath).Length;
+                            double ratio = (double)actualSize / sidecar.ExpectedAllocatedBytes.Value;
+                            Log.Information("Pre-verification size check: actual={Actual}, expected>={Expected}, ratio={Ratio:P1}",
                                 actualSize, sidecar.ExpectedAllocatedBytes.Value, ratio);
-                            StatusMessage = $"Backup failed: image is only {FormatBytes((ulong)actualSize)} — " +
-                                $"expected at least {FormatBytes((ulong)sidecar.ExpectedAllocatedBytes.Value)}. " +
-                                $"The disk may have encountered an I/O error during the backup.";
-                            status = "Failed";
-                            errorMessage = $"Image undersized: {actualSize:N0} bytes vs {sidecar.ExpectedAllocatedBytes.Value:N0} expected";
-                            skipFullVerify = true;
+
+                            if (ratio < 0.75)
+                            {
+                                Log.Error("Image is drastically undersized: {Actual} bytes vs {Expected} expected allocated bytes ({Ratio:P1})",
+                                    actualSize, sidecar.ExpectedAllocatedBytes.Value, ratio);
+                                StatusMessage = $"Backup failed: image is only {FormatBytes((ulong)actualSize)} — " +
+                                    $"expected at least {FormatBytes((ulong)sidecar.ExpectedAllocatedBytes.Value)}. " +
+                                    $"The disk may have encountered an I/O error during the backup.";
+                                status = "Failed";
+                                errorMessage = $"Image undersized: {actualSize:N0} bytes vs {sidecar.ExpectedAllocatedBytes.Value:N0} expected";
+                                skipFullVerify = true;
+                            }
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning(ex, "Pre-verification size check failed, proceeding with full verification");
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Pre-verification size check failed, proceeding with full verification");
+                    }
                 }
 
                 if (!skipFullVerify)

@@ -106,9 +106,6 @@
                               ItemsSource="{Binding AvailableTargetPartitions}"
                               SelectedItem="{Binding SelectedTargetPartition, Mode=TwoWay}"
                               IsEnabled="{Binding HasTargetPartitions}" />
-
-                    <ToggleSwitch Header="Verify filesystem after restore" IsOn="{Binding RunFilesystemCheck, Mode=TwoWay}"
-                                  OnContent="Filesystem check enabled" OffContent="Skip filesystem check" />
                 </StackPanel>
             </StackPanel>
 

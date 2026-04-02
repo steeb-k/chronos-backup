@@ -342,7 +342,7 @@ public partial class App : Application
         services.AddSingleton<IVirtualDiskService, VirtualDiskService>();
         services.AddSingleton<ICompressionProvider, ZstdCompressionProvider>();
         services.AddSingleton<IBackupEngine, BackupEngine>();
-        services.AddSingleton<IFilesystemChecker, FilesystemChecker>();
+
         services.AddSingleton<IRestoreEngine, RestoreEngine>();
         services.AddSingleton<IVerificationEngine, VerificationEngine>();
         services.AddSingleton<IBackupOperationsService, BackupOperationsService>();

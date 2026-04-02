@@ -76,30 +76,6 @@ Chronos.App.exe --selftest
 
 PE deployment requires ~25 system DLLs injected from a full Windows image. Use `scripts/Extract-WimDeps.ps1` and see `README-WinPE.md` for the complete list.
 
-## Post-Restore Filesystem Check
-
-After `RestoreEngine.ExecuteAsync` completes, if `RestoreJob.RunFilesystemCheck` is true
-and the source is a VHDX, `IFilesystemChecker.CheckAsync` is called
-(`src/Chronos.Core/Imaging/FilesystemChecker.cs`):
-
-1. Mounts the source VHDX read-only via `IVirtualDiskService.MountToDriveLetterAsync`
-2. Runs `chkdsk.exe /scan /perf {letter}:` (120s timeout) — exit 0 = healthy, 2 = warnings, 3 = errors
-3. **WinPE fallback**: when `chkdsk.exe` is absent, reads the first 512 bytes of the volume
-   raw and checks for the `0x55 0xAA` boot signature and known OEM IDs (`NTFS`, `FAT32`, `EXFAT`, `ReFS`)
-4. Always dismounts in `finally`
-
-The final status message from the engine encodes the result:
-- `"Restore completed successfully"` — check skipped or not a VHDX
-- `"Restore completed — filesystem OK (...)"` — chkdsk exit 0
-- `"Restore completed — filesystem warnings: ..."` — chkdsk exit 2
-- `"Restore completed — filesystem errors detected: ..."` — chkdsk exit 3+
-
-`RestoreViewModel.IsStatusWarning` / `IsStatusError` / `StatusInfoBarSeverity` map these
-strings to the correct `InfoBar` severity (Success / Warning / Error).
-
-`RestoreJob.RunFilesystemCheck` defaults to `true` and is exposed in the UI as
-"Verify filesystem after restore" on `RestorePage.xaml`.
-
 ## Failure Cleanup and Operation History
 
 **Partial-file cleanup on backup failure**: `BackupEngine.CopyToVhdxAsync` and `CopyToFileAsync`

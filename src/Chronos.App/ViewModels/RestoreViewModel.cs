@@ -28,8 +28,6 @@ public partial class RestoreViewModel : ObservableObject
     [ObservableProperty] public partial DiskInfo? SelectedTargetDisk { get; set; }
     [ObservableProperty] public partial PartitionInfo? SelectedTargetPartition { get; set; }
     [ObservableProperty] public partial bool VerifyDuringRestore { get; set; } = true;
-    [ObservableProperty] public partial bool RunFilesystemCheck { get; set; } = true;
-
     // --- Source partition selection (for single-partition restore from multi-partition VHDX) ---
     [ObservableProperty] public partial List<PartitionInfo> AvailableSourcePartitions { get; set; } = new();
     [ObservableProperty] public partial PartitionInfo? SelectedSourcePartition { get; set; }
@@ -51,7 +49,6 @@ public partial class RestoreViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasStatusMessage))]
     [NotifyPropertyChangedFor(nameof(IsStatusError))]
-    [NotifyPropertyChangedFor(nameof(IsStatusWarning))]
     [NotifyPropertyChangedFor(nameof(StatusInfoBarTitle))]
     [NotifyPropertyChangedFor(nameof(StatusInfoBarSeverity))]
     public partial string StatusMessage { get; set; } = string.Empty;
@@ -81,23 +78,16 @@ public partial class RestoreViewModel : ObservableObject
                               || StatusMessage.StartsWith("Restore I/O error", StringComparison.OrdinalIgnoreCase)
                               || StatusMessage.StartsWith("Validation failed", StringComparison.OrdinalIgnoreCase)
                               || StatusMessage.StartsWith("Validation error", StringComparison.OrdinalIgnoreCase)
-                              || StatusMessage.StartsWith("Error:", StringComparison.OrdinalIgnoreCase)
-                              || StatusMessage.Contains("filesystem errors detected", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>True when the restore completed but the filesystem check found warnings.</summary>
-    public bool IsStatusWarning => !IsStatusError
-                                && StatusMessage.Contains("filesystem warnings", StringComparison.OrdinalIgnoreCase);
+                              || StatusMessage.StartsWith("Error:", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>InfoBar title based on whether status is an error, warning, or success.</summary>
     public string StatusInfoBarTitle =>
-        IsStatusError   ? "Error" :
-        IsStatusWarning ? "Warning" :
+        IsStatusError ? "Error" :
         StatusMessage.Contains("completed", StringComparison.OrdinalIgnoreCase) ? "Success" : "Status";
 
     /// <summary>InfoBar severity for visual styling.</summary>
     public Microsoft.UI.Xaml.Controls.InfoBarSeverity StatusInfoBarSeverity =>
-        IsStatusError   ? Microsoft.UI.Xaml.Controls.InfoBarSeverity.Error :
-        IsStatusWarning ? Microsoft.UI.Xaml.Controls.InfoBarSeverity.Warning :
+        IsStatusError ? Microsoft.UI.Xaml.Controls.InfoBarSeverity.Error :
         StatusMessage.Contains("completed", StringComparison.OrdinalIgnoreCase)
             ? Microsoft.UI.Xaml.Controls.InfoBarSeverity.Success
             : Microsoft.UI.Xaml.Controls.InfoBarSeverity.Informational;
@@ -356,7 +346,7 @@ public partial class RestoreViewModel : ObservableObject
             SourceImagePath = SourceImagePath,
             TargetPath = targetPath,
             VerifyDuringRestore = VerifyDuringRestore,
-            RunFilesystemCheck = RunFilesystemCheck,
+
             ForceOverwrite = false, // We'll validate first
             SourcePartitionNumber = IsSinglePartitionRestore ? SelectedSourcePartition!.PartitionNumber : null,
             TargetUnallocatedOffset = isTargetUnallocated ? SelectedTargetPartition!.Offset : null,
