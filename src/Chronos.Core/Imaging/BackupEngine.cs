@@ -362,7 +362,16 @@ public class BackupEngine : IBackupEngine
                             var vssProgress = progressReporter != null
                                 ? new Progress<string>(msg => progressReporter.Report(new OperationProgress { StatusMessage = msg }))
                                 : null;
-                            snapshotSet = await _vssService.CreateSnapshotSetAsync(volumesToSnapshot, ct, vssProgress).ConfigureAwait(false);
+                            try
+                            {
+                                snapshotSet = await _vssService.CreateSnapshotSetAsync(volumesToSnapshot, ct, vssProgress).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException) { throw; }
+                            catch (Exception ex)
+                            {
+                                Log.Warning(ex, "VSS snapshot failed — falling back to volume locking (source volumes may use a filesystem that does not support VSS)");
+                                snapshotSet = null;
+                            }
                         }
                     }
 
