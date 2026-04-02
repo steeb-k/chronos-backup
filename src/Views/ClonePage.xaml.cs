@@ -1,3 +1,4 @@
+using Chronos.App.Helpers;
 using Chronos.App.ViewModels;
 using Chronos.Core.Models;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,6 +10,8 @@ namespace Chronos.App.Views;
 
 public sealed partial class ClonePage : Page
 {
+    private bool _wasCloneInProgress;
+
     public CloneViewModel ViewModel { get; }
 
     public ClonePage()
@@ -34,8 +37,21 @@ public sealed partial class ClonePage : Page
         };
     }
 
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    private async void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(CloneViewModel.IsCloneInProgress))
+        {
+            if (ViewModel.IsCloneInProgress)
+                _wasCloneInProgress = true;
+            else if (_wasCloneInProgress)
+            {
+                _wasCloneInProgress = false;
+                var msg = ViewModel.StatusMessage;
+                if (!string.IsNullOrEmpty(msg))
+                    await CompletionDialogHelper.ShowCompletionDialogAsync(this.Content.XamlRoot, msg);
+            }
+        }
+
         if (e.PropertyName is nameof(CloneViewModel.SelectedDisk) or nameof(CloneViewModel.AvailablePartitions))
         {
             SourceDiskMap.Disk = ViewModel.SelectedDisk;

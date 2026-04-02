@@ -1,3 +1,4 @@
+using Chronos.App.Helpers;
 using Chronos.App.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml.Controls;
@@ -12,6 +13,8 @@ namespace Chronos.App.Views;
 
 public sealed partial class RestorePage : Page
 {
+    private bool _wasRestoreInProgress;
+
     public RestoreViewModel ViewModel { get; }
 
     public RestorePage()
@@ -38,8 +41,21 @@ public sealed partial class RestorePage : Page
         };
     }
 
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    private async void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(RestoreViewModel.IsRestoreInProgress))
+        {
+            if (ViewModel.IsRestoreInProgress)
+                _wasRestoreInProgress = true;
+            else if (_wasRestoreInProgress)
+            {
+                _wasRestoreInProgress = false;
+                var msg = ViewModel.StatusMessage;
+                if (!string.IsNullOrEmpty(msg))
+                    await CompletionDialogHelper.ShowCompletionDialogAsync(this.Content.XamlRoot, msg);
+            }
+        }
+
         if (e.PropertyName is nameof(RestoreViewModel.StatusMessage) or nameof(RestoreViewModel.IsStatusError))
         {
             if (ViewModel.IsStatusError)

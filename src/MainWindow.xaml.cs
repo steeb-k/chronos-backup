@@ -1,15 +1,22 @@
 using Chronos.App.Services;
+using Chronos.App.ViewModels;
+using Chronos.App.Views;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using System.ComponentModel;
 
 namespace Chronos.App;
 
 public sealed partial class MainWindow : Window
 {
     private readonly INavigationService _navigationService;
+    private readonly IBackupOperationsService _backupOperationsService;
+    private PropertyChangedEventHandler? _restorePropertyHandler;
 
     public MainWindow()
     {
@@ -51,7 +58,21 @@ public sealed partial class MainWindow : Window
 
         // Configure navigation service with the content frame
         _navigationService = App.Services.GetRequiredService<INavigationService>();
+        _backupOperationsService = App.Services.GetRequiredService<IBackupOperationsService>();
         _navigationService.Initialize(ContentFrame);
+
+        // Watch backup/clone operation state to disable nav items
+        if (_backupOperationsService is ObservableObject backupObservable)
+        {
+            backupObservable.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName == nameof(IBackupOperationsService.IsBackupInProgress))
+                    UpdateNavItemsEnabled();
+            };
+        }
+
+        // Watch for RestorePage navigations to subscribe to its ViewModel
+        ContentFrame.Navigated += OnContentFrameNavigated;
     }
 
     private const int NavPaneWidth = 220;
@@ -114,6 +135,46 @@ public sealed partial class MainWindow : Window
             new(navW, 0, contentW, topH)
         };
         titleBar.SetDragRectangles(rects);
+    }
+
+    private void OnContentFrameNavigated(object sender, Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)
+    {
+        // Unsubscribe from any previous RestorePage's ViewModel
+        if (_restorePropertyHandler is not null)
+        {
+            _restorePropertyHandler = null;
+        }
+
+        // Subscribe to RestorePage's ViewModel when navigated to it
+        if (e.Content is RestorePage restorePage)
+        {
+            _restorePropertyHandler = (_, pe) =>
+            {
+                if (pe.PropertyName == nameof(RestoreViewModel.IsRestoreInProgress))
+                    UpdateNavItemsEnabled();
+            };
+            restorePage.ViewModel.PropertyChanged += _restorePropertyHandler;
+        }
+    }
+
+    /// <summary>
+    /// Enables or disables all non-selected navigation items based on whether an operation is running.
+    /// </summary>
+    private void UpdateNavItemsEnabled()
+    {
+        bool locked = _backupOperationsService.IsBackupInProgress
+            || (ContentFrame.Content is RestorePage rp && rp.ViewModel.IsRestoreInProgress);
+
+        foreach (var obj in NavView.MenuItems)
+        {
+            if (obj is NavigationViewItem navItem && !ReferenceEquals(navItem, NavView.SelectedItem))
+                navItem.IsEnabled = !locked;
+        }
+        foreach (var obj in NavView.FooterMenuItems)
+        {
+            if (obj is NavigationViewItem navItem && !ReferenceEquals(navItem, NavView.SelectedItem))
+                navItem.IsEnabled = !locked;
+        }
     }
 
     private void NavView_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)

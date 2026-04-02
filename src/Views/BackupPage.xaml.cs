@@ -1,3 +1,4 @@
+using Chronos.App.Helpers;
 using Chronos.App.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml.Controls;
@@ -7,6 +8,8 @@ namespace Chronos.App.Views;
 
 public sealed partial class BackupPage : Page
 {
+    private bool _wasBackupInProgress;
+
     public BackupViewModel ViewModel { get; }
 
     public BackupPage()
@@ -48,8 +51,21 @@ public sealed partial class BackupPage : Page
         };
     }
 
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    private async void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(BackupViewModel.IsBackupInProgress))
+        {
+            if (ViewModel.IsBackupInProgress)
+                _wasBackupInProgress = true;
+            else if (_wasBackupInProgress)
+            {
+                _wasBackupInProgress = false;
+                var msg = ViewModel.StatusMessage;
+                if (!string.IsNullOrEmpty(msg))
+                    await CompletionDialogHelper.ShowCompletionDialogAsync(this.Content.XamlRoot, msg);
+            }
+        }
+
         if (e.PropertyName is nameof(BackupViewModel.SelectedDisk) or nameof(BackupViewModel.AvailablePartitions))
         {
             SourceDiskMap.Disk = ViewModel.SelectedDisk;

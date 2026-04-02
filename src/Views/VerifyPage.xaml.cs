@@ -1,3 +1,4 @@
+using Chronos.App.Helpers;
 using Chronos.App.ViewModels;
 using Chronos.App.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -8,6 +9,9 @@ namespace Chronos.App.Views;
 
 public sealed partial class VerifyPage : Page
 {
+    private bool _wasVerificationInProgress;
+    private bool _wasHashInProgress;
+
     public VerifyViewModel ViewModel { get; }
 
     public VerifyPage()
@@ -18,8 +22,34 @@ public sealed partial class VerifyPage : Page
         ViewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
 
-    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    private async void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(VerifyViewModel.IsVerificationInProgress))
+        {
+            if (ViewModel.IsVerificationInProgress)
+                _wasVerificationInProgress = true;
+            else if (_wasVerificationInProgress)
+            {
+                _wasVerificationInProgress = false;
+                var msg = ViewModel.StatusMessage;
+                if (!string.IsNullOrEmpty(msg))
+                    await CompletionDialogHelper.ShowCompletionDialogAsync(this.Content.XamlRoot, msg);
+            }
+        }
+
+        if (e.PropertyName == nameof(VerifyViewModel.IsHashInProgress))
+        {
+            if (ViewModel.IsHashInProgress)
+                _wasHashInProgress = true;
+            else if (_wasHashInProgress)
+            {
+                _wasHashInProgress = false;
+                var msg = ViewModel.StatusMessage;
+                if (!string.IsNullOrEmpty(msg))
+                    await CompletionDialogHelper.ShowCompletionDialogAsync(this.Content.XamlRoot, msg);
+            }
+        }
+
         if (e.PropertyName is nameof(VerifyViewModel.SourceDisk) or nameof(VerifyViewModel.SourcePartitions))
         {
             SourceDiskMap.Disk = ViewModel.SourceDisk;
