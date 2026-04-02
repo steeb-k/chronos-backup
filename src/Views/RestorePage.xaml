@@ -107,8 +107,8 @@
                               SelectedItem="{Binding SelectedTargetPartition, Mode=TwoWay}"
                               IsEnabled="{Binding HasTargetPartitions}" />
 
-                    <ToggleSwitch Header="Verify during restore" IsOn="{Binding VerifyDuringRestore, Mode=TwoWay}"
-                                  OnContent="Integrity check active" OffContent="Skip verification" />
+                    <ToggleSwitch Header="Verify filesystem after restore" IsOn="{Binding RunFilesystemCheck, Mode=TwoWay}"
+                                  OnContent="Filesystem check enabled" OffContent="Skip filesystem check" />
                 </StackPanel>
             </StackPanel>
 
@@ -129,7 +129,8 @@
             <!-- Status message (always visible when non-empty, including after errors) -->
             <InfoBar x:Name="StatusInfoBar" IsOpen="{Binding HasStatusMessage}" IsClosable="True"
                      Title="{Binding StatusInfoBarTitle}"
-                     Message="{Binding StatusMessage}" />
+                     Message="{Binding StatusMessage}"
+                     Severity="{Binding StatusInfoBarSeverity}" />
 
             <!-- Action -->
             <Grid Margin="0,8,0,24">

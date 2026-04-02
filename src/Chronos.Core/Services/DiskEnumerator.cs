@@ -483,7 +483,9 @@ public class DiskEnumerator : IDiskEnumerator
         {
             var type = partition["Type"]?.ToString() ?? string.Empty;
             // WMI Type strings: "GPT: System", "GPT: Basic Data", "GPT: Unknown", "Installable File System", etc.
-            if (type.Contains("System", StringComparison.OrdinalIgnoreCase) ||
+            // Must match "GPT: System" specifically — a loose Contains("System") falsely matches
+            // MBR's "Installable File System" and labels every MBR partition as ESP.
+            if (type.Contains("GPT: System", StringComparison.OrdinalIgnoreCase) ||
                 type.Contains("EFI", StringComparison.OrdinalIgnoreCase))
                 return "EFI (ESP)";
             if (type.Contains("Basic Data", StringComparison.OrdinalIgnoreCase) ||

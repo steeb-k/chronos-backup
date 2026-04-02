@@ -21,6 +21,13 @@ public class RestoreJob
     public bool VerifyDuringRestore { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets whether to run a filesystem consistency check on the source image
+    /// after the restore completes. Uses chkdsk /scan when available, falling back to
+    /// an NTFS boot-sector check in WinPE environments.
+    /// </summary>
+    public bool RunFilesystemCheck { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets whether to force overwrite without confirmation.
     /// </summary>
     public bool ForceOverwrite { get; set; }

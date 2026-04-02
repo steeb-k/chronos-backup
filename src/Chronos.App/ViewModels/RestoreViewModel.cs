@@ -10,6 +10,7 @@ using Windows.Storage.Pickers;
 using WinRT.Interop;
 using Microsoft.UI.Dispatching;
 using Serilog;
+using System.Runtime.InteropServices;
 
 namespace Chronos.App.ViewModels;
 
@@ -17,6 +18,7 @@ public partial class RestoreViewModel : ObservableObject
 {
     private readonly IRestoreEngine? _restoreEngine;
     private readonly IDiskEnumerator? _diskEnumerator;
+    private readonly IOperationHistoryService? _historyService;
     private CancellationTokenSource? _cancellationTokenSource;
     private DispatcherQueue? _dispatcherQueue;
 
@@ -26,6 +28,7 @@ public partial class RestoreViewModel : ObservableObject
     [ObservableProperty] public partial DiskInfo? SelectedTargetDisk { get; set; }
     [ObservableProperty] public partial PartitionInfo? SelectedTargetPartition { get; set; }
     [ObservableProperty] public partial bool VerifyDuringRestore { get; set; } = true;
+    [ObservableProperty] public partial bool RunFilesystemCheck { get; set; } = true;
 
     // --- Source partition selection (for single-partition restore from multi-partition VHDX) ---
     [ObservableProperty] public partial List<PartitionInfo> AvailableSourcePartitions { get; set; } = new();
@@ -48,7 +51,9 @@ public partial class RestoreViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasStatusMessage))]
     [NotifyPropertyChangedFor(nameof(IsStatusError))]
+    [NotifyPropertyChangedFor(nameof(IsStatusWarning))]
     [NotifyPropertyChangedFor(nameof(StatusInfoBarTitle))]
+    [NotifyPropertyChangedFor(nameof(StatusInfoBarSeverity))]
     public partial string StatusMessage { get; set; } = string.Empty;
     [ObservableProperty] public partial bool HasTargetPartitions { get; set; }
 
@@ -76,11 +81,26 @@ public partial class RestoreViewModel : ObservableObject
                               || StatusMessage.StartsWith("Restore I/O error", StringComparison.OrdinalIgnoreCase)
                               || StatusMessage.StartsWith("Validation failed", StringComparison.OrdinalIgnoreCase)
                               || StatusMessage.StartsWith("Validation error", StringComparison.OrdinalIgnoreCase)
-                              || StatusMessage.StartsWith("Error:", StringComparison.OrdinalIgnoreCase);
+                              || StatusMessage.StartsWith("Error:", StringComparison.OrdinalIgnoreCase)
+                              || StatusMessage.Contains("filesystem errors detected", StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>InfoBar title based on whether status is an error or informational.</summary>
-    public string StatusInfoBarTitle => IsStatusError ? "Error" : 
-        (StatusMessage.Contains("completed successfully", StringComparison.OrdinalIgnoreCase) ? "Success" : "Status");
+    /// <summary>True when the restore completed but the filesystem check found warnings.</summary>
+    public bool IsStatusWarning => !IsStatusError
+                                && StatusMessage.Contains("filesystem warnings", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>InfoBar title based on whether status is an error, warning, or success.</summary>
+    public string StatusInfoBarTitle =>
+        IsStatusError   ? "Error" :
+        IsStatusWarning ? "Warning" :
+        StatusMessage.Contains("completed", StringComparison.OrdinalIgnoreCase) ? "Success" : "Status";
+
+    /// <summary>InfoBar severity for visual styling.</summary>
+    public Microsoft.UI.Xaml.Controls.InfoBarSeverity StatusInfoBarSeverity =>
+        IsStatusError   ? Microsoft.UI.Xaml.Controls.InfoBarSeverity.Error :
+        IsStatusWarning ? Microsoft.UI.Xaml.Controls.InfoBarSeverity.Warning :
+        StatusMessage.Contains("completed", StringComparison.OrdinalIgnoreCase)
+            ? Microsoft.UI.Xaml.Controls.InfoBarSeverity.Success
+            : Microsoft.UI.Xaml.Controls.InfoBarSeverity.Informational;
     [ObservableProperty] public partial long BytesProcessed { get; set; }
     [ObservableProperty] public partial long TotalBytes { get; set; }
     [ObservableProperty] public partial long BytesPerSecond { get; set; }
@@ -90,10 +110,11 @@ public partial class RestoreViewModel : ObservableObject
         SelectedTargetDisk is not null && 
         !IsRestoreInProgress;
 
-    public RestoreViewModel(IRestoreEngine? restoreEngine = null, IDiskEnumerator? diskEnumerator = null)
+    public RestoreViewModel(IRestoreEngine? restoreEngine = null, IDiskEnumerator? diskEnumerator = null, IOperationHistoryService? historyService = null)
     {
         _restoreEngine = restoreEngine;
         _diskEnumerator = diskEnumerator;
+        _historyService = historyService;
         
         // Capture the UI dispatcher queue for marshaling status updates
         try
@@ -335,6 +356,7 @@ public partial class RestoreViewModel : ObservableObject
             SourceImagePath = SourceImagePath,
             TargetPath = targetPath,
             VerifyDuringRestore = VerifyDuringRestore,
+            RunFilesystemCheck = RunFilesystemCheck,
             ForceOverwrite = false, // We'll validate first
             SourcePartitionNumber = IsSinglePartitionRestore ? SelectedSourcePartition!.PartitionNumber : null,
             TargetUnallocatedOffset = isTargetUnallocated ? SelectedTargetPartition!.Offset : null,
@@ -368,6 +390,11 @@ public partial class RestoreViewModel : ObservableObject
             return;
         }
 
+        var startTime = DateTime.UtcNow;
+        long bytesProcessed = 0;
+        string historyStatus = "Success";
+        string? historyError = null;
+
         try
         {
             IsRestoreInProgress = true;
@@ -382,7 +409,7 @@ public partial class RestoreViewModel : ObservableObject
             PowerManagement.PreventSleep();
 
             _cancellationTokenSource = new CancellationTokenSource();
-            
+
             var lastUiUpdate = DateTime.MinValue;
             var progress = new Progress<OperationProgress>(p =>
             {
@@ -393,6 +420,7 @@ public partial class RestoreViewModel : ObservableObject
 
                 ProgressPercentage = p.PercentComplete;
                 BytesProcessed = p.BytesProcessed;
+                bytesProcessed = p.BytesProcessed;
                 TotalBytes = p.TotalBytes;
                 BytesPerSecond = p.BytesPerSecond;
 
@@ -419,29 +447,34 @@ public partial class RestoreViewModel : ObservableObject
 
             var progressReporter = new ProgressReporter(progress);
             await _restoreEngine.ExecuteAsync(job, progressReporter, _cancellationTokenSource.Token);
-
-            StatusMessage = "Restore completed successfully!";
-            ProgressPercentage = 100;
         }
         catch (OperationCanceledException)
         {
             StatusMessage = "Restore cancelled";
+            historyStatus = "Cancelled";
             Log.Warning("Restore operation cancelled by user");
         }
         catch (InvalidOperationException ex)
         {
             StatusMessage = $"Restore failed: {ex.Message}";
+            historyStatus = "Failed";
+            historyError = ex.Message;
             Log.Error(ex, "Restore validation or operation failed");
         }
         catch (IOException ex)
         {
             StatusMessage = $"Restore I/O error: {ex.Message}";
+            historyStatus = "Failed";
+            historyError = ex.Message;
             Log.Error(ex, "Restore I/O error");
         }
         catch (Exception ex)
         {
             StatusMessage = $"Restore failed: {ex.Message}";
-            Log.Error(ex, "Restore failed with unexpected error");
+            historyStatus = "Failed";
+            historyError = ex.Message;
+            int win32 = Marshal.GetLastWin32Error();
+            Log.Error(ex, "Restore failed with unexpected error. Win32={Win32} (0x{Win32X})", win32, win32.ToString("X"));
         }
         finally
         {
@@ -452,6 +485,22 @@ public partial class RestoreViewModel : ObservableObject
             OnPropertyChanged(nameof(CanStartRestore));
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
+
+            // Log to operation history
+            if (_historyService is not null)
+            {
+                _historyService.LogOperation(new OperationHistoryEntry
+                {
+                    Timestamp = startTime,
+                    OperationType = "Restore",
+                    SourcePath = job.SourceImagePath,
+                    DestinationPath = job.TargetPath,
+                    Status = historyStatus,
+                    ErrorMessage = historyError,
+                    BytesProcessed = bytesProcessed,
+                    Duration = DateTime.UtcNow - startTime
+                });
+            }
         }
     }
 

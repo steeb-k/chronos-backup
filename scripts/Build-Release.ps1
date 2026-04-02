@@ -14,16 +14,25 @@
 .PARAMETER SkipInstaller
     Skip installer generation (only create ZIPs).
 
+.PARAMETER Sign
+    Sign executables and installers (non-interactive). Implies you want signing without a prompt.
+
+.PARAMETER NoSign
+    Do not sign (non-interactive). Overrides -Sign if both are specified.
+
 .EXAMPLE
     .\Build-Release.ps1
     .\Build-Release.ps1 -Version "1.0.0"
+    .\Build-Release.ps1 -Sign
 #>
 
 param(
-    [string]$Version = "0.5.0",
+    [string]$Version = "0.6.1",
 
     [switch]$SkipBuild,
-    [switch]$SkipInstaller
+    [switch]$SkipInstaller,
+    [switch]$Sign,
+    [switch]$NoSign
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,6 +50,22 @@ if ((Test-Path $versionFile) -and ($Version -eq "0.1.1")) {
 Write-Host "======================================" -ForegroundColor Cyan
 Write-Host "  Chronos Release Build v$Version" -ForegroundColor Cyan
 Write-Host "======================================" -ForegroundColor Cyan
+Write-Host ""
+
+if ($NoSign) {
+    $SignExecutables = $false
+} elseif ($Sign) {
+    $SignExecutables = $true
+} else {
+    $signResponse = Read-Host "Sign Chronos.App.exe (x64/ARM64) and setup exes with Azure Artifact Signing when configured? [y/N]"
+    $SignExecutables = ($signResponse -match '^\s*y')
+}
+
+if ($SignExecutables) {
+    Write-Host "Signing: enabled for this run." -ForegroundColor DarkGray
+} else {
+    Write-Host "Signing: skipped (unsigned build)." -ForegroundColor DarkGray
+}
 Write-Host ""
 
 # Create dist directory
@@ -305,19 +330,22 @@ Bundle-PeRuntimeDeps -PublishDir $x64PublishDir_pe -Arch "x64"
 Bundle-PeRuntimeDeps -PublishDir $arm64PublishDir_pe -Arch "ARM64"
 Write-Host "  Done." -ForegroundColor Green
 
-# Sign app exes before packaging so ZIPs and installers contain signed executables
-$AppSigningSucceeded = Sign-WithArtifactSigning -PathsToSign @(
-    (Join-Path $x64PublishDir_pe "Chronos.App.exe"),
-    (Join-Path $arm64PublishDir_pe "Chronos.App.exe")
-)
-if (-not $AppSigningSucceeded) {
-    Write-Host ""
-    $response = Read-Host "One or more signing steps failed. Continue building ZIPs and installers (unsigned)? [Y/n]"
-    if ($response -match '^n|^N') {
-        Write-Host "Build stopped by user." -ForegroundColor Yellow
-        exit 1
+# Sign app exes before packaging so ZIPs and installers contain signed executables (optional)
+$AppSigningSucceeded = $true
+if ($SignExecutables) {
+    $AppSigningSucceeded = Sign-WithArtifactSigning -PathsToSign @(
+        (Join-Path $x64PublishDir_pe "Chronos.App.exe"),
+        (Join-Path $arm64PublishDir_pe "Chronos.App.exe")
+    )
+    if (-not $AppSigningSucceeded) {
+        Write-Host ""
+        $response = Read-Host "One or more signing steps failed. Continue building ZIPs and installers (unsigned)? [Y/n]"
+        if ($response -match '^n|^N') {
+            Write-Host "Build stopped by user." -ForegroundColor Yellow
+            exit 1
+        }
+        Write-Host "Continuing with unsigned build..." -ForegroundColor Yellow
     }
-    Write-Host "Continuing with unsigned build..." -ForegroundColor Yellow
 }
 
 # Create ZIP files
@@ -421,11 +449,13 @@ if (-not $SkipInstaller) {
     Write-Host "[5/5] Skipping installer generation (--SkipInstaller)" -ForegroundColor DarkGray
 }
 
-# Optional: Sign installer exes (app exes were signed before packaging)
-Sign-WithArtifactSigning -PathsToSign @(
-    (Join-Path $DistDir "Chronos-$Version-x64-Setup.exe"),
-    (Join-Path $DistDir "Chronos-$Version-arm64-Setup.exe")
-)
+# Optional: Sign installer exes (app exes were signed before packaging when signing was enabled)
+if ($SignExecutables) {
+    Sign-WithArtifactSigning -PathsToSign @(
+        (Join-Path $DistDir "Chronos-$Version-x64-Setup.exe"),
+        (Join-Path $DistDir "Chronos-$Version-arm64-Setup.exe")
+    )
+}
 
 Write-Host ""
 Write-Host "======================================" -ForegroundColor Cyan
